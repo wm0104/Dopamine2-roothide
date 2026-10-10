@@ -8,6 +8,7 @@
 #import "DOMainViewController.h"
 #import "DOUIManager.h"
 #import "DOEnvironmentManager.h"
+#import "../Jailbreak/DOPreferencesRestore.h"
 #import "DOJailbreaker.h"
 #import "DOGlobalAppearance.h"
 #import "DOActionMenuButton.h"
@@ -23,6 +24,7 @@
 @property DOActionMenuButton *updateButton;
 @property(nonatomic) BOOL hideStatusBar;
 @property(nonatomic) BOOL hideHomeIndicator;
+@property(nonatomic) BOOL restoringPreferences;
 
 @end
 
@@ -99,6 +101,9 @@
             [self fadeToBlack:^{
                 [[DOEnvironmentManager sharedManager] rebootUserspace];
             }];
+        }],
+        [UIAction actionWithTitle:@"恢复插件配置" image:[UIImage systemImageNamed:@"arrow.down.doc" withConfiguration:[DOGlobalAppearance smallIconImageConfiguration]] identifier:@"restore-preferences" handler:^(__kindof UIAction * _Nonnull action) {
+            [self promptPreferencesRestore];
         }],
         [UIAction actionWithTitle:DOLocalizedString(@"Menu_Credits_Title") image:[UIImage systemImageNamed:@"info.circle" withConfiguration:[DOGlobalAppearance smallIconImageConfiguration]] identifier:@"credits" handler:^(__kindof UIAction * _Nonnull action) {
             [self.navigationController pushViewController:[[DOCreditsViewController alloc] init] animated:YES];
@@ -185,6 +190,100 @@
             });
         }
     });
+}
+
+- (void)showPreferencesRestoreResult:(NSString *)message respring:(BOOL)respring
+{
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"恢复插件配置" message:message preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"关闭" style:UIAlertActionStyleCancel handler:nil]];
+    if (respring) [alert addAction:[UIAlertAction actionWithTitle:@"重启 SpringBoard" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [self fadeToBlack:^{ [[DOEnvironmentManager sharedManager] respring]; }];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)promptPreferencesRestore
+{
+    if (self.restoringPreferences) return;
+    if (![[DOEnvironmentManager sharedManager] isJailbroken]) {
+        [self showPreferencesRestoreResult:@"请先启用 RootHide 越狱。" respring:NO];
+        return;
+    }
+    UIAlertController *prompt = [UIAlertController alertControllerWithTitle:@"恢复插件配置" message:@"输入备份的绝对目录路径：支持备份根目录（内含 Library/Preferences）、Library 或 Preferences。递归合并所有普通文件，不筛选插件或系统配置。符号链接及特殊文件不会恢复。" preferredStyle:UIAlertControllerStyleAlert];
+    [prompt addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"/var/mobile/备份/Library/Preferences";
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+    [prompt addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [prompt addAction:[UIAlertAction actionWithTitle:@"检查目录" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        NSString *input = [prompt.textFields.firstObject.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        self.restoringPreferences = YES;
+        UIAlertController *progress = [UIAlertController alertControllerWithTitle:@"正在检查配置目录…" message:@"请稍候，不会执行备份内的任何文件。" preferredStyle:UIAlertControllerStyleAlert];
+        [self presentViewController:progress animated:YES completion:^{
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                DOPreferencesRestore *restore = [DOPreferencesRestore new];
+                __block NSError *error = DORestoreError(@"无法获得 root 权限，未修改任何配置。");
+                __block BOOL ready = NO;
+                DOEnvironmentManager *environment = [DOEnvironmentManager sharedManager];
+                if ([environment isJailbroken]) [environment runAsRoot:^{
+                    [environment runUnsandboxed:^{
+                        error = nil;
+                        ready = [restore prepare:input destination:JBROOT_PATH(@"/var/mobile/Library/Preferences") error:&error];
+                    }];
+                }];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [progress dismissViewControllerAnimated:YES completion:^{
+                        if (!ready) {
+                            self.restoringPreferences = NO;
+                            [self showPreferencesRestoreResult:error.localizedDescription ?: @"检查失败，未修改任何配置。" respring:NO];
+                            return;
+                        }
+                        NSString *message = [NSString stringWithFormat:@"源：%@\n目标：%@\n普通文件：%lu\n跳过符号链接/特殊文件：%lu\n\n同名文件将被覆盖，所有被覆盖原件先保存到目标内独立的 .dopamine-originals-* 目录。保留目标其他文件，仅恢复 Preferences。建议停止使用相关插件；配置服务缓存可能需要重启 SpringBoard 后重新加载。", restore.source, restore.destination, (unsigned long)restore.files.count, (unsigned long)restore.skipped];
+                        UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"确认恢复全部配置？" message:message preferredStyle:UIAlertControllerStyleAlert];
+                        [confirm addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) { self.restoringPreferences = NO; }]];
+                        [confirm addAction:[UIAlertAction actionWithTitle:@"备份原件并恢复" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+                            [self applyPreferencesRestore:restore];
+                        }]];
+                        [self presentViewController:confirm animated:YES completion:nil];
+                    }];
+                });
+            });
+        }];
+    }]];
+    [self presentViewController:prompt animated:YES completion:nil];
+}
+
+- (void)applyPreferencesRestore:(DOPreferencesRestore *)restore
+{
+    UIAlertController *progress = [UIAlertController alertControllerWithTitle:@"正在备份原件并恢复…" message:@"请勿关闭应用。" preferredStyle:UIAlertControllerStyleAlert];
+    [self presentViewController:progress animated:YES completion:^{
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            DOEnvironmentManager *environment = [DOEnvironmentManager sharedManager];
+            __block NSError *error = DORestoreError(@"越狱不可用或无法获得 root 权限，未写入配置。");
+            __block BOOL success = NO;
+            if ([environment isJailbroken]) [environment runAsRoot:^{
+                [environment runUnsandboxed:^{
+                    NSString *active = DORestoreCanonical(JBROOT_PATH(@"/var/mobile/Library/Preferences"));
+                    if (![active isEqualToString:restore.destination]) {
+                        error = DORestoreError(@"活动 RootHide 目录已改变，请重新检查，未写入配置。");
+                    } else {
+                        error = nil;
+                        success = [restore apply:&error];
+                    }
+                }];
+            }];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.restoringPreferences = NO;
+                [progress dismissViewControllerAnimated:YES completion:^{
+                    NSString *status = success ? @"恢复完成。" : (error.localizedDescription ?: @"恢复失败。");
+                    NSString *message = [NSString stringWithFormat:@"%@\n已恢复：%lu/%lu\n跳过符号链接/特殊文件：%lu\n源：%@\n目标：%@\n原件备份：%@", status, (unsigned long)restore.restored, (unsigned long)restore.files.count, (unsigned long)restore.skipped, restore.source, restore.destination, restore.backup ?: @"未创建"];
+                    [self showPreferencesRestoreResult:message respring:restore.restored > 0];
+                }];
+            });
+        });
+    }];
 }
 
 - (NSString *)jailbreakButtonTitle
@@ -370,6 +469,7 @@
 
 - (BOOL)actionMenuActionIsEnabled:(UIAction *)action
 {
+    if ([action.identifier isEqualToString:@"restore-preferences"]) return !self.restoringPreferences && [[DOEnvironmentManager sharedManager] isJailbroken];
     if ([action.identifier isEqualToString:@"respring"] || [action.identifier isEqualToString:@"reboot-userspace"]) {
         return [[DOEnvironmentManager sharedManager] isJailbroken];
     }

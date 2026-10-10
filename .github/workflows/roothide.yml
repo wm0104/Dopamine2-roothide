@@ -16,10 +16,10 @@ jobs:
     runs-on: macos-14
     steps:
       - name: Checkout
-        run: |
-          set -x
-          git clone --recursive https://github.com/roothide/Dopamine2-roothide ${{ github.workspace }}
-          
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
       - name: Install Procursus
         uses: dhinakg/procursus-action@main
         with:
@@ -35,9 +35,8 @@ jobs:
           gsed -E "/^\s*get_theos\s*$/,+1 s/^(\s*)(get_sdks)\s*$/\1mkdir -p \${THEOS}\/sdks\n\1touch \${THEOS}\/sdks\/sdk\n\1\2/g" -i install-theos.sh
           bash install-theos.sh
           curl -L https://github.com/theos/sdks/releases/latest/download/iPhoneOS16.5.sdk.tar.xz --output $THEOS/sdks/iPhoneOS16.5.sdk.tar.xz
-          gunzip $THEOS/sdks/iPhoneOS16.5.sdk.tar.xz
-          tar -xf $THEOS/sdks/iPhoneOS16.5.sdk.tar -C $THEOS/sdks
-          rm $THEOS/sdks/iPhoneOS16.5.sdk.tar
+          tar -xJf "$THEOS/sdks/iPhoneOS16.5.sdk.tar.xz" -C "$THEOS/sdks"
+          rm "$THEOS/sdks/iPhoneOS16.5.sdk.tar.xz"
           cd $BASEDIR
 
       - name: Build and Install trustcache
@@ -76,6 +75,8 @@ jobs:
           gmake -j$(sysctl -n hw.physicalcpu)
           VERSION=$(cat ./BaseBin/_external/basebin/.version)-$(git rev-parse --short HEAD)
           mv ./Application/Dopamine.tipa  "./Application/roothide-Dopamine-${VERSION}.tipa"
+          cp "./Application/roothide-Dopamine-${VERSION}.tipa" "./Application/roothide-Dopamine-${VERSION}.ipa"
+          cmp "./Application/roothide-Dopamine-${VERSION}.tipa" "./Application/roothide-Dopamine-${VERSION}.ipa"
           echo "version=${VERSION}" >> $GITHUB_ENV
 
       - name: Upload Artifact
@@ -85,3 +86,4 @@ jobs:
           name: roothide-Dopamine-${{ env.version }}.tipa
           path: |
             ${{ github.workspace }}/Application/roothide-Dopamine-${{ env.version }}.tipa
+            ${{ github.workspace }}/Application/roothide-Dopamine-${{ env.version }}.ipa
