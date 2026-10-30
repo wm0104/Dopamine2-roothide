@@ -17,6 +17,10 @@ int main(void) { @autoreleasepool {
     // A genuinely older environment must still be detected.
     CHECK([customTag numericalVersionRepresentation] > [@"28" numericalVersionRepresentation]);
     CHECK([@"29" numericalVersionRepresentation] == [customTag numericalVersionRepresentation]);
+    NSDictionary *plainSuffix = @{@"CFBundleShortVersionString":@"3.0.12-29-wm0104", @"DORootHideVersion":@"29"};
+    NSString *plainTag = [NSString environmentVersionFromInfoDictionary:plainSuffix];
+    CHECK([plainTag isEqualToString:@"29"]);
+    CHECK(!([plainTag numericalVersionRepresentation] > installed));
 
     // Older bundles without the explicit key keep the upstream behaviour.
     CHECK([[NSString environmentVersionFromInfoDictionary:legacy] isEqualToString:@"29"]);

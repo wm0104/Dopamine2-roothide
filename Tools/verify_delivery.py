@@ -63,7 +63,11 @@ with tempfile.TemporaryDirectory() as temp:
     ent = read_entitlements(main)
     assert ent.get('platform-application') is True and ent.get('com.apple.private.security.no-sandbox') is True
     assert info['CFBundleIdentifier'] == 'cn.zqbb.dopaRH'
-    assert 'wm0104' in info['CFBundleShortVersionString']
+    version_root = repo / 'BaseBin/_external/basebin'
+    expected_version = f"{(version_root / '.version').read_text().strip()}-{(version_root / '.version-roothide').read_text().strip()}"
+    assert info['CFBundleShortVersionString'] == expected_version
+    assert info['CFBundleVersion'].isdigit()
+    assert info.get('CFBundleDisplayName', info['CFBundleName']) == 'Dopamine'
     # The RootHide environment version must be explicit: a custom revision suffix
     # made the old last-'-' parsing report a permanent environment update.
     assert info['DORootHideVersion'] == (repo/'BaseBin/_external/basebin/.version-roothide').read_text().strip()

@@ -20,4 +20,9 @@ assert 'archivebox' in text('Application/Dopamine/Backup/DOBackupController.m')
 assert 'environmentVersionFromInfoDictionary' in text('Application/Dopamine/UI/DOUIManager.m')
 assert 'DORootHideVersion' in text('Application/Makefile')
 assert '配置备份' in text('Application/Dopamine/Backup/DOConfigurationBackupManager.m')
+version_recipe = next(line for line in text('Application/Makefile').splitlines() if 'CFBundleShortVersionString' in line)
+assert 'wm0104' not in version_recipe
+assert 'CUSTOM_REVISION' not in version_recipe
+build_recipe = next(line for line in text('Application/Makefile').splitlines() if 'CFBundleVersion' in line)
+assert '"$(CUSTOM_REVISION)"' in build_recipe
 print('Custom regression guards passed')
