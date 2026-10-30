@@ -12,8 +12,6 @@ NS_ASSUME_NONNULL_BEGIN
 @interface DOHeaderView : UIView
 
 -(id)initWithImage:(UIImage *)image subtitles:(NSArray<NSAttributedString *> *)subtitles;
-- (UILabel *)addSubtitle:(NSAttributedString *)subtitle;
-- (UILabel *)addInformationRowWithTitle:(NSAttributedString *)title;
 
 @end
 

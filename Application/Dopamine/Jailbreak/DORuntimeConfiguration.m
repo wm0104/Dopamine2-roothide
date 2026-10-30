@@ -56,20 +56,4 @@
     return nil;
 }
 
-// 首次建立越狱标记，之后让已安装的挂载服务恢复用户挂载。
-+ (NSError *)restoreCustomMounts
-{
-    NSString *mountRoot = JBROOT_PATH(@"/mnt");
-    NSError *error = nil;
-    if (![NSFileManager.defaultManager createDirectoryAtPath:mountRoot withIntermediateDirectories:YES attributes:nil error:&error]) return error;
-    NSString *flagPath = [mountRoot stringByAppendingPathComponent:@".zqbbJailbreak"];
-    if (![NSFileManager.defaultManager fileExistsAtPath:flagPath]) {
-        if (![[NSData data] writeToFile:flagPath options:NSDataWritingAtomic error:&error]) return error;
-    }
-    else if (access(JBROOT_PATH("/usr/bin/HelloMntDaemon"), F_OK) == 0) {
-        int status = exec_cmd_trusted(JBROOT_PATH("/usr/bin/HelloMntDaemon"), "remountAll", NULL);
-        if (status != 0) return [NSError errorWithDomain:@"DORuntimeConfiguration" code:status userInfo:@{NSLocalizedDescriptionKey: @"HelloMntDaemon remountAll failed"}];
-    }
-    return nil;
-}
 @end
