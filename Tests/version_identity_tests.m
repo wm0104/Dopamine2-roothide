@@ -22,7 +22,8 @@ int main(void) { @autoreleasepool {
     CHECK([[NSString environmentVersionFromInfoDictionary:legacy] isEqualToString:@"29"]);
     CHECK([[NSString environmentVersionFromInfoDictionary:malformed] isEqualToString:@"3.0.12"]);
     CHECK([NSString environmentVersionFromInfoDictionary:@{}] == nil);
-    CHECK([[NSString environmentVersionFromInfoDictionary:@{@"DORootHideVersion":@5, @"CFBundleShortVersionString":@"3.0.12-30"}] isEqualToString:@"30"]);
+    NSDictionary *explicitOther = @{@"DORootHideVersion":@5, @"CFBundleShortVersionString":@"3.0.12-30"};
+    CHECK([[NSString environmentVersionFromInfoDictionary:explicitOther] isEqualToString:@"30"]);
 
     // Oversized groups are truncated instead of tripping an assertion.
     CHECK([@"1.2.3.4.5" numericalVersionRepresentation] == [@"1.2.3" numericalVersionRepresentation]);
