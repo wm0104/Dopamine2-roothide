@@ -46,6 +46,9 @@ static void ExtendedBackupTests(void) {
  for (NSString *p in excluded) Put([[legacy stringByAppendingPathComponent:@"插件配置备份/Library"] stringByAppendingPathComponent:p],activation);
  Put([legacy stringByAppendingPathComponent:@"源地址备份/new.list"],Text(@"deb https://other-fixture.example/ ./\n"));
  NSURL *legacyURL=[NSURL fileURLWithPath:legacy];
+ // Eligible Preferences containing secrets fail closed; unsupported siblings are ignored.
+ CHECK(![m loadArchive:legacyURL error:&e]);
+ CHECK([NSFileManager.defaultManager removeItemAtPath:[legacy stringByAppendingPathComponent:@"插件配置备份/Library/Preferences/org.example.authorization.plist"] error:nil]);
  CHECK([m loadArchive:legacyURL error:&e].count==4);
  for (NSUInteger i=0;i<paths.count;i++) {
   NSString *p=[library stringByAppendingPathComponent:paths[i]]; Put(p,i==2?Text(@"rollback-binary"):Plist(@"rollback-plist"));
