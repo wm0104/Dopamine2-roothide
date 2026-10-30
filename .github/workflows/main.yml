@@ -1,6 +1,8 @@
 name: Build custom RootHide IPA
 
 on:
+  push:
+    branches: ['custom/3.x_roothide']
   workflow_dispatch:
 
 permissions:
