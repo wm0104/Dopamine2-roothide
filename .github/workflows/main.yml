@@ -1,112 +1,87 @@
-name: "*** build ipa/tipa file ***"
+name: Build custom RootHide IPA
 
 on:
-  push:
-    branches:
-      - '*'
-    paths-ignore:
-      - ".gitignore"
-  pull_request:
-    branches:
-      - '*'
-    paths-ignore:
-      - ".gitignore"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: custom-roothide-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-15
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
     steps:
-      - name: Xcode Setup
-        uses: maxim-lobanov/setup-xcode@v1
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+      - uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: latest-stable
-
-      - name: Checkout
-        uses: actions/checkout@main
+      - name: Install native tools
+        run: |
+          brew install make ldid libarchive openssl pkg-config dpkg xz zstd ripgrep
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+          echo "THEOS=$RUNNER_TEMP/roothide-theos" >> "$GITHUB_ENV"
+          echo "BUILD_TIMESTAMP=$(date +%s)" >> "$GITHUB_ENV"
+      - uses: actions/cache@v4
+        id: theos-cache
         with:
-            repository: roothide/Dopamine-roothide
-            submodules: recursive
-
-      - name: Install Procursus
-        uses: dhinakg/procursus-action@main
+          path: ${{ runner.temp }}/roothide-theos
+          key: roothide-theos-${{ runner.os }}-${{ runner.arch }}-3ac89c9-sdk16.5-v1
+      - name: Prepare pinned RootHide Theos
+        if: steps.theos-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone https://github.com/roothide/theos "$THEOS"
+          git -C "$THEOS" checkout 3ac89c984ec652fd16bcd91b33ae16de45ce76fa
+          git -C "$THEOS" submodule update --init --recursive
+          mkdir -p "$THEOS/sdks"
+          curl --fail --location --retry 3 https://github.com/theos/sdks/releases/latest/download/iPhoneOS16.5.sdk.tar.xz -o "$RUNNER_TEMP/sdk.tar.xz"
+          tar -xJf "$RUNNER_TEMP/sdk.tar.xz" -C "$THEOS/sdks"
+          test -d "$THEOS/sdks/iPhoneOS16.5.sdk"
+      - name: Build pinned trustcache tool
+        run: |
+          git clone https://github.com/CRKatri/trustcache "$RUNNER_TEMP/trustcache"
+          git -C "$RUNNER_TEMP/trustcache" checkout aa0e8847529cf76576fce8d2dbc9e088c8f1a0df
+          make -C "$RUNNER_TEMP/trustcache" -j4 OPENSSL=1 CFLAGS="-I$(brew --prefix openssl)/include" LDFLAGS="-L$(brew --prefix openssl)/lib"
+          echo "$RUNNER_TEMP/trustcache" >> "$GITHUB_PATH"
+      - name: Test source migration on temporary fixtures
+        run: |
+          clang -fobjc-arc -fmodules -framework Foundation -IApplication/Dopamine/Backup Tests/source_migration_tests.m Application/Dopamine/Backup/DOSourceMigration.m -o "$RUNNER_TEMP/source-tests"
+          sudo "$RUNNER_TEMP/source-tests"
+      - name: Run custom regression checks
+        run: |
+          for test in Tests/*_checks.py; do
+            [ ! -f "$test" ] || python3 "$test"
+          done
+          if [ -f Tests/run_backup_tests.sh ]; then bash Tests/run_backup_tests.sh; fi
+      - name: Build complete jailbreak and application
+        run: |
+          set -o pipefail
+          make -j4 NIGHTLY=0 BUILD_STANDALONE=0 2>&1 | tee "$RUNNER_TEMP/dopamine-build.log"
+      - name: Verify and package delivery
+        run: |
+          python3 Tools/verify_delivery.py Application/Dopamine.ipa
+      - uses: actions/upload-artifact@v4
         with:
-          packages: ldid findutils sed coreutils make
-
-      - name: Install better GNU Make
-        run: |
-          brew install make
-          echo "PATH=$(brew --prefix make)/libexec/gnubin:$PATH" >> $GITHUB_ENV
-
-      - name: Install THEOS
-        run: |
-          set -x
-          export BASEDIR="$(pwd)"
-          export THEOS="${BASEDIR}/theos"
-          mkdir -p $THEOS
-          curl -fsSL https://raw.githubusercontent.com/roothide/theos/master/bin/install-theos >> install-theos.sh
-          gsed -E "/^\s*get_theos\s*$/,+1 s/^(\s*)(get_sdks)\s*$/\1mkdir -p \${THEOS}\/sdks\n\1touch \${THEOS}\/sdks\/sdk\n\1\2/g" -i install-theos.sh
-          bash install-theos.sh
-          curl -L https://github.com/theos/sdks/releases/latest/download/iPhoneOS16.5.sdk.tar.xz --output $THEOS/sdks/iPhoneOS16.5.sdk.tar.xz
-          gunzip $THEOS/sdks/iPhoneOS16.5.sdk.tar.xz
-          tar -xf $THEOS/sdks/iPhoneOS16.5.sdk.tar -C $THEOS/sdks
-          rm $THEOS/sdks/iPhoneOS16.5.sdk.tar
-          cd $BASEDIR
-
-      - name: Build and Install trustcache
-        run: |
-          set -x
-          git clone https://github.com/CRKatri/trustcache
-          cd trustcache
-          export CFLAGS="$CFLAGS -I$(brew --prefix openssl)/include -arch arm64"
-          export LDFLAGS="$LDFLAGS -L$(brew --prefix openssl)/lib -arch arm64"
-          gmake -j$(sysctl -n hw.logicalcpu) OPENSSL=1
-          sudo cp trustcache /opt/procursus/bin/
-
-      - name: Set Environment Variables
-        run: |
-          set -x
-          T2=$(TZ=UTC-2 date +'%Y%m%d_%H%M%S')
-          TS=$(date -j -f "%Y%m%d_%H%M%S" "${T2}" +%s)
-          SHASH=$(git rev-parse --short HEAD)
-          echo "ctime=${T2}" >> $GITHUB_ENV
-          echo "ctimestamp=${TS}" >> $GITHUB_ENV
-          echo "shorthash=${SHASH}" >> $GITHUB_ENV
-
-      - name: Install libarchive
-        run: |
-          brew install libarchive
-
-      - name: Build
-        run: |
-          set -x
-          export BASEDIR="$(pwd)"
-          export THEOS="${BASEDIR}/theos"
-          plutil -insert items.4 -xml "<dict><key>cell</key><string>PSGroupCell</string><key>label</key><string>BUILDER</string></dict>" ./Application/Dopamine/UI/Settings/Credits.plist
-          plutil -insert items.5 -xml "<dict><key>cell</key><string>PSGroupCell</string><key>headerCellClass</key><string>DOCreditsCell</string><key>names</key><array><dict><key>name</key><string>${{ github.actor }}</string><key>link</key><string>https://github.com/${{ github.repository }}</string></dict></array></dict>" ./Application/Dopamine/UI/Settings/Credits.plist
-          gmake -j$(sysctl -n hw.logicalcpu) NIGHTLY=1
-          VERSION="("$(cat ./BaseBin/_external/basebin/.version)-$(cat ./BaseBin/_external/basebin/.version-roothide)-$(git rev-parse --short HEAD)")"-$(TZ=UTC git show -s --date=format-local:'%Y.%m.%d-%Z-%H.%M.%S' --format='%cd' HEAD)
-          mv ./Application/Dopamine.ipa  "./Application/roothide-Dopamine-${VERSION}.ipa"
-          mv ./Application/Dopamine.tipa "./Application/roothide-Dopamine-${VERSION}.tipa"
-          echo "version=${VERSION}" >> $GITHUB_ENV
-
-      - name: Upload Artifact
-        id: dopamine-latest-upload
-        uses: actions/upload-artifact@main
-        with:
-          name: Dopamine
+          name: Dopamine-custom-${{ github.sha }}
           path: |
-            ${{ github.workspace }}/Application/roothide-Dopamine-${{ env.version }}.ipa
-          archive: false
-
-      - name: Upload Artifact(TIPA)
-        id: dopamine-latest-upload-tipa
-        uses: actions/upload-artifact@main
+            Application/Dopamine.ipa
+            Application/Dopamine.tipa
+            Application/Dopamine.ipa.sha256
+            Application/verification.json
+          if-no-files-found: error
+      - name: Upload logs even after failures
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          path: |
-            ${{ github.workspace }}/Application/roothide-Dopamine-${{ env.version }}.tipa
-          archive: false
+          name: Build-logs-${{ github.sha }}
+          path: ${{ runner.temp }}/dopamine-build.log
+          if-no-files-found: ignore
