@@ -154,3 +154,7 @@
 "Uptime_Format" = "%llu d %02llu:%02llu:%02llu";
 "Build version: %@" = "Build version: %@";
 "Build time: %@" = "Build time: %@";
+
+"Backup_And_Restore" = "Back Up & Restore Configuration";
+"Whitelist_Installing" = "Installing the bundled whitelist manager. Please keep the app open…";
+"Whitelist_Installed" = "Whitelist manager installed. No automatic respring.";

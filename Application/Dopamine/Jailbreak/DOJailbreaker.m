@@ -7,6 +7,7 @@
 
 #import "DOJailbreaker.h"
 #import "DORuntimeConfiguration.h"
+#import "../Backup/DOSourceMigration.h"
 #import "DOEnvironmentManager.h"
 #import "DOExploitManager.h"
 #import "DOUIManager.h"
@@ -628,7 +629,6 @@ void *boomerang_server(struct boomerang_info *info)
     }
     
     gSystemInfo.jailbreakSettings.markAppsAsDebugged = appJITEnabled;
-    gSystemInfo.jailbreakSettings.trollStoreLiteFixDisabled = ![[DOPreferenceManager sharedManager] boolPreferenceValueForKey:@"trollStoreLiteFixEnabled" fallback:YES];
     gSystemInfo.jailbreakSettings.jetsamMultiplier = jetsamMultiplierOption ? (jetsamMultiplierOption.doubleValue / 2) : 0;
     
     
@@ -779,10 +779,10 @@ setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
         return;
     }
     
-    *errOut = [DORuntimeConfiguration restoreCustomMounts];
-    if (*errOut) {
-        [self cleanUpPostExploitation];
-        return;
+    // Migrate once; a source error must not turn a successful jailbreak into a failure.
+    NSError *sourceError = nil;
+    if (![DOSourceMigration migrateSourcesAtRoot:JBROOT_PATH(@"/") error:&sourceError]) {
+        [[DOUIManager sharedInstance] sendLog:[NSString stringWithFormat:@"Source migration: %@", sourceError.localizedDescription ?: @"Unknown error"] debug:NO];
     }
 
     [[DOEnvironmentManager sharedManager] setIDownloadEnabled:idownloadEnabled needsUnsandbox:NO];

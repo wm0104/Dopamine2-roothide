@@ -986,7 +986,7 @@ NSString* rootfsPrefix(NSString* path)
 
 #define DEFAULT_SOURCES "\
 Types: deb\n\
-URIs: https://apt.002599.xyz/\n\
+URIs: https://wm0104.github.io/repo/\n\
 Suites: ./\n\
 Components:\n\
 \n\

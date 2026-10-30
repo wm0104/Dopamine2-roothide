@@ -11,6 +11,7 @@ with tempfile.TemporaryDirectory() as temp:
     with zipfile.ZipFile(ipa) as z:
         assert z.testzip() is None
         for entry in z.infolist():
+            assert (entry.external_attr >> 16) & 0o170000 != 0o120000, 'Symlink ZIP entries require explicit preservation; refusing unsafe repack'
             assert not pathlib.PurePosixPath(entry.filename).is_absolute() and '..' not in pathlib.PurePosixPath(entry.filename).parts
         z.extractall(work)
         # zipfile does not preserve executable bits by default.

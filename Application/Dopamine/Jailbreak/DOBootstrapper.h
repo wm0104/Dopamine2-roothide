@@ -31,6 +31,7 @@ typedef NS_ENUM(NSInteger, BootstrapErrorCode) {
 - (NSError *)updateVarJbSymlink;
 - (NSError *)ensurePrivatePrebootIsWritable;
 - (NSError *)installPackageManagers;
+- (int)installPackage:(NSString *)packagePath;
 - (NSError *)finalizeBootstrap;
 - (NSError *)deleteBootstrap;
 

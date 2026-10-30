@@ -149,3 +149,7 @@
 "Uptime_Format" = "%llu天 %02llu:%02llu:%02llu";
 "Build version: %@" = "编译版本：%@";
 "Build time: %@" = "编译时间：%@";
+
+"Backup_And_Restore" = "备份与恢复配置";
+"Whitelist_Installing" = "正在安装内置白名单管理器，请勿关闭应用…";
+"Whitelist_Installed" = "白名单管理器已安装，未自动注销。";

@@ -891,6 +891,33 @@ extern char **environ;
     return error;
 }
 
+- (NSError *)reinstallWhitelistManager
+{
+    if (!self.isJailbroken) {
+        return [NSError errorWithDomain:@"Dopamine" code:-1 userInfo:@{NSLocalizedDescriptionKey: @"The device must be jailbroken to reinstall the whitelist manager."}];
+    }
+    NSString *path = [NSBundle.mainBundle pathForResource:@"roothideWhite" ofType:@"deb"];
+    if (!path || ![NSFileManager.defaultManager isReadableFileAtPath:path]) {
+        return [NSError errorWithDomain:@"Dopamine" code:-2 userInfo:@{NSLocalizedDescriptionKey: @"The bundled roothideWhite.deb could not be found or read."}];
+    }
+
+    __block BOOL executed = NO;
+    __block int r = -1;
+    [self runAsRoot:^{
+        [self runUnsandboxed:^{
+            executed = YES;
+            r = [self->_bootstrapper installPackage:path];
+        }];
+    }];
+    if (!executed) {
+        return [NSError errorWithDomain:@"Dopamine" code:-3 userInfo:@{NSLocalizedDescriptionKey: @"Could not obtain privileges to reinstall the whitelist manager."}];
+    }
+    if (r != 0) {
+        return [NSError errorWithDomain:@"Dopamine" code:r userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Failed to install roothideWhite.deb: %d", r]}];
+    }
+    return nil;
+}
+
 - (NSError *)updateBootLogo
 {
     const char *bootLogoPath = JBROOT_PATH("/basebin/bootlogo.jp2");
@@ -922,14 +949,6 @@ extern char **environ;
         }];
         return nil;
     }
-}
-
-// 根据注入配置是否存在返回模式简称，供系统版本后的括号显示。
-- (NSString *)injectionModeDescription
-{
-    if (!self.isJailbroken) return DOLocalizedString(@"Injection_Mode_Waiting");
-    BOOL whitelist = access(JBROOT_PATH("/var/mobile/Library/RootHide/cn.zqbb.inject.plist"), F_OK) == 0;
-    return DOLocalizedString(whitelist ? @"Injection_Mode_Whitelist" : @"Injection_Mode_Blacklist");
 }
 
 // 读取当前 Sileo 的 URL scheme，兼容 RootHide 重写。

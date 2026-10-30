@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		D00104000000000000000001 /* DOBackupController.m in Sources */ = {isa = PBXBuildFile; fileRef = D00104000000000000000011 /* DOBackupController.m */; };
+		D00104000000000000000002 /* DOConfigurationBackupManager.m in Sources */ = {isa = PBXBuildFile; fileRef = D00104000000000000000013 /* DOConfigurationBackupManager.m */; };
+		D00104000000000000000003 /* DOSourceMigration.m in Sources */ = {isa = PBXBuildFile; fileRef = D00104000000000000000015 /* DOSourceMigration.m */; };
 		A25990010000000000000001 /* DORuntimeConfiguration.m in Sources */ = {isa = PBXBuildFile; fileRef = A25990010000000000000002 /* DORuntimeConfiguration.m */; };
 		040622AA2B77FE8E00393AAD /* DOPkgManagerPickerViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = 040622A92B77FE8E00393AAD /* DOPkgManagerPickerViewController.m */; };
 		042479A22B66916B0082581B /* DOCreditsViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = 0424796B2B66916B0082581B /* DOCreditsViewController.m */; };
@@ -386,6 +389,12 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		D00104000000000000000010 /* DOBackupController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DOBackupController.h; sourceTree = "<group>"; };
+		D00104000000000000000011 /* DOBackupController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = DOBackupController.m; sourceTree = "<group>"; };
+		D00104000000000000000012 /* DOConfigurationBackupManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DOConfigurationBackupManager.h; sourceTree = "<group>"; };
+		D00104000000000000000013 /* DOConfigurationBackupManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = DOConfigurationBackupManager.m; sourceTree = "<group>"; };
+		D00104000000000000000014 /* DOSourceMigration.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DOSourceMigration.h; sourceTree = "<group>"; };
+		D00104000000000000000015 /* DOSourceMigration.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = DOSourceMigration.m; sourceTree = "<group>"; };
         A25990010000000000000002 /* DORuntimeConfiguration.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = DORuntimeConfiguration.m; sourceTree = "<group>"; };
         A25990010000000000000003 /* DORuntimeConfiguration.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DORuntimeConfiguration.h; sourceTree = "<group>"; };
 		040622A82B77FE8E00393AAD /* DOPkgManagerPickerViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DOPkgManagerPickerViewController.h; sourceTree = "<group>"; };
@@ -854,6 +863,19 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		D00104000000000000000020 /* Backup */ = {
+			isa = PBXGroup;
+			children = (
+				D00104000000000000000010 /* DOBackupController.h */,
+				D00104000000000000000011 /* DOBackupController.m */,
+				D00104000000000000000012 /* DOConfigurationBackupManager.h */,
+				D00104000000000000000013 /* DOConfigurationBackupManager.m */,
+				D00104000000000000000014 /* DOSourceMigration.h */,
+				D00104000000000000000015 /* DOSourceMigration.m */,
+			);
+			path = Backup;
+			sourceTree = "<group>";
+		};
 		042479672B66916B0082581B /* UI */ = {
 			isa = PBXGroup;
 			children = (
@@ -1351,6 +1373,7 @@
 		8C7198172ABF0E82003C6658 /* Dopamine */ = {
 			isa = PBXGroup;
 			children = (
+				D00104000000000000000020 /* Backup */,
 				8CB94F012B59E16D0098BAFD /* Resources */,
 				8C46D71D2B588857002899DB /* Headers */,
 				8C7198332ABF133D003C6658 /* App Delegates */,
@@ -2275,6 +2298,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D00104000000000000000001 /* DOBackupController.m in Sources */,
+				D00104000000000000000002 /* DOConfigurationBackupManager.m in Sources */,
+				D00104000000000000000003 /* DOSourceMigration.m in Sources */,
 				8C609C9E2C19B4270023DD12 /* NSString+Version.m in Sources */,
 				042479A62B66916B0082581B /* DOHeaderCell.m in Sources */,
 				8C6599DD2C555A71000FF57F /* DOPSJetsamListItemsController.h in Sources */,

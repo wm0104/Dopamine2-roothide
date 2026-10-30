@@ -20,6 +20,7 @@
 #import "DOSceneDelegate.h"
 #import "DOPSJetsamListItemsController.h"
 #import "DOButtonCell.h"
+#import "../../Backup/DOBackupController.h"
 
 @interface DOSettingsController ()
 
@@ -270,12 +271,6 @@
             /**************************** roothide specfic *********************************/
             
             
-            PSSpecifier *trollStoreLiteFix = [PSSpecifier preferenceSpecifierNamed:@"TrollStoreLite Fix" target:self set:@selector(setTrollStoreLiteFixEnabled:specifier:) get:@selector(readTrollStoreLiteFixEnabled:) detail:nil cell:PSSwitchCell edit:nil];
-            [trollStoreLiteFix setProperty:@YES forKey:@"enabled"];
-            [trollStoreLiteFix setProperty:@"trollStoreLiteFixEnabled" forKey:@"key"];
-            [trollStoreLiteFix setProperty:@YES forKey:@"default"];
-            [specifiers addObject:trollStoreLiteFix];
-
             PSSpecifier *jetsamSpecifier = [PSSpecifier preferenceSpecifierNamed:DOLocalizedString(@"Settings_Jetsam_Multiplier") target:self set:@selector(setJetsamMultiplier:specifier:) get:@selector(readJetsamMultiplier:) detail:nil cell:PSLinkListCell edit:nil];
             [jetsamSpecifier setProperty:@YES forKey:@"enabled"];
             [jetsamSpecifier setProperty:@"jetsamMultiplier" forKey:@"key"];
@@ -300,7 +295,7 @@
                 if (envManager.isJailbroken) {
                     for (NSDictionary *tool in @[
                         @{@"title": @"Install Whitelist App", @"action": @"installWhitelistAppPressed"},
-                        @{@"title": @"Install Mount App", @"action": @"installMountAppPressed"}
+                        @{@"title": @"Backup_And_Restore", @"action": @"backupAndRestorePressed"}
                     ]) {
                         PSSpecifier *toolSpecifier = [PSSpecifier preferenceSpecifierNamed:@"" target:self set:defSetter get:defGetter detail:nil cell:PSStaticTextCell edit:nil];
                         [toolSpecifier setProperty:tool[@"title"] forKey:@"title"];
@@ -539,33 +534,6 @@
     }
 }
 
-// 已越狱时读取实际状态，旧环境不支持该键时使用本地默认值。
-- (id)readTrollStoreLiteFixEnabled:(PSSpecifier *)specifier
-{
-    if ([DOEnvironmentManager sharedManager].isJailbroken) {
-        xpc_object_t value = NULL;
-        if (jbclient_jbsettings_get("trollStoreLiteFixEnabled", &value) == 0
-            && value && xpc_get_type(value) == XPC_TYPE_BOOL) {
-            return @(xpc_bool_get_value(value));
-        }
-    }
-    return [self readPreferenceValue:specifier];
-}
-
-// 运行中先同步开关，成功后持久化；现有租约继续等待进程退出。
-- (void)setTrollStoreLiteFixEnabled:(id)value specifier:(PSSpecifier *)specifier
-{
-    if ([DOEnvironmentManager sharedManager].isJailbroken
-        && jbclient_platform_jbsettings_set_bool("trollStoreLiteFixEnabled", [value boolValue]) != 0) {
-        [self reloadSpecifiers];
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:DOLocalizedString(@"Error") message:@"Could not apply this setting. Update the jailbreak environment and try again." preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:DOLocalizedString(@"OK") style:UIAlertActionStyleDefault handler:nil]];
-        [self presentViewController:alert animated:YES completion:nil];
-        return;
-    }
-    [self setPreferenceValue:value specifier:specifier];
-}
-
 - (id)readJetsamMultiplier:(PSSpecifier *)specifier
 {
     DOEnvironmentManager *envManager = [DOEnvironmentManager sharedManager];
@@ -706,30 +674,39 @@
 
 #pragma mark - Button Actions
 
-// 打开当前 Sileo 的配套工具详情页。
-- (void)openSileoPackage:(NSString *)identifier
+// Install from the bundled package; the user's repository need not host the manager.
+- (void)installWhitelistAppPressed
 {
-    DOEnvironmentManager *environment = DOEnvironmentManager.sharedManager;
-    if (!environment.isJailbroken) return;
-    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@://package/%@", environment.sileoURLScheme, identifier]];
-    [UIApplication.sharedApplication openURL:url options:@{} completionHandler:^(BOOL success) {
-        if (success) return;
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:DOLocalizedString(@"Error") message:DOLocalizedString(@"Sileo_Open_Failed") preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:DOLocalizedString(@"OK") style:UIAlertActionStyleDefault handler:nil]];
-        [self presentViewController:alert animated:YES completion:nil];
+    if (![DOEnvironmentManager sharedManager].isJailbroken || self.presentedViewController) return;
+    UIAlertController *progress = [UIAlertController alertControllerWithTitle:DOLocalizedString(@"Install Whitelist App") message:DOLocalizedString(@"Whitelist_Installing") preferredStyle:UIAlertControllerStyleAlert];
+    [self presentViewController:progress animated:YES completion:^{
+        UINavigationController *nav = self.navigationController;
+        BOOL popEnabled = nav.interactivePopGestureRecognizer.enabled;
+        BOOL interaction = nav.view.userInteractionEnabled;
+        BOOL modalLock = nav.modalInPresentation;
+        nav.interactivePopGestureRecognizer.enabled = NO;
+        nav.view.userInteractionEnabled = NO;
+        nav.modalInPresentation = YES;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            NSError *error = [[DOEnvironmentManager sharedManager] reinstallWhitelistManager];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                nav.interactivePopGestureRecognizer.enabled = popEnabled;
+                nav.view.userInteractionEnabled = interaction;
+                nav.modalInPresentation = modalLock;
+                [progress dismissViewControllerAnimated:YES completion:^{
+                    UIAlertController *result = [UIAlertController alertControllerWithTitle:DOLocalizedString(error ? @"Error" : @"Install Whitelist App") message:error ? error.localizedDescription : DOLocalizedString(@"Whitelist_Installed") preferredStyle:UIAlertControllerStyleAlert];
+                    [result addAction:[UIAlertAction actionWithTitle:DOLocalizedString(@"OK") style:UIAlertActionStyleDefault handler:nil]];
+                    if (self.view.window && self.navigationController.topViewController == self) [self presentViewController:result animated:YES completion:nil];
+                }];
+            });
+        });
     }];
 }
 
-// 跳转安装白名单管理器。
-- (void)installWhitelistAppPressed
+- (void)backupAndRestorePressed
 {
-    [self openSileoPackage:@"cn.zqbb.inject.manager"];
-}
-
-// 跳转安装挂载管理器。
-- (void)installMountAppPressed
-{
-    [self openSileoPackage:@"cn.zqbb.hello.mnt"];
+    if (![DOEnvironmentManager sharedManager].isJailbroken) return;
+    [self.navigationController pushViewController:[[DOBackupController alloc] init] animated:YES];
 }
 
 - (void)refreshJailbreakAppsPressed

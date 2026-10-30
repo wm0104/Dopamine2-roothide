@@ -10,7 +10,7 @@ Dopamine.ipa: build/Build/Products/Debug-iphoneos/Dopamine.app
 	@echo Ad-Hoc signing Dopamine
 	xattr -rc build/Build/Products/Debug-iphoneos/Dopamine.app
 	ldid -SDopamine/Dopamine.entitlements build/Build/Products/Debug-iphoneos/Dopamine.app/Dopamine
-	ldid -s build/Build/Products/Debug-iphoneos/Dopamine.app
+	# Native signing (including nested code) is performed by verify_delivery.py.
 	rm -rf Payload Dopamine.ipa
 	mkdir Payload
 	cp -r build/Build/Products/Debug-iphoneos/Dopamine.app Payload/Dopamine.app

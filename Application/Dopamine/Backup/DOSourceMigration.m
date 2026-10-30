@@ -1,6 +1,8 @@
 #import "DOSourceMigration.h"
 #import <sys/stat.h>
 #import <unistd.h>
+#import <dirent.h>
+#import "DOBackupFileIO.h"
 
 static NSString *const DOOwnedSource = @"https://wm0104.github.io/repo/";
 static NSError *DOSE(NSString *message) {
@@ -100,14 +102,6 @@ static NSString *DONormalized(NSString *text) {
     return joined.length && ![joined hasSuffix:@"\n"] ? [joined stringByAppendingString:@"\n"] : joined;
 }
 
-static NSData *DOReadSource(NSString *path, NSError **error) {
-    struct stat st;
-    if (lstat(path.fileSystemRepresentation, &st) || !S_ISREG(st.st_mode) || st.st_nlink != 1 || st.st_size > 1024*1024) {
-        if (error) *error = DOSE([NSString stringWithFormat:@"Unsafe or unreadable source file: %@", path.lastPathComponent]);
-        return nil;
-    }
-    return [NSData dataWithContentsOfFile:path options:0 error:error];
-}
 static BOOL DOHasOwnedURI(NSString *text) {
     for (NSString *token in DOWords(text)) {
         NSURLComponents *uri = [NSURLComponents componentsWithString:token];
@@ -118,93 +112,93 @@ static BOOL DOHasOwnedURI(NSString *text) {
     return NO;
 }
 + (BOOL)migrateSourcesAtRoot:(NSString *)root error:(NSError **)error {
-    NSFileManager *fm = NSFileManager.defaultManager;
-    if (!root.length || ![root hasPrefix:@"/"] || [root isEqualToString:@"/"]) {
-        if (error) *error = DOSE(@"No active RootHide environment."); return NO;
-    }
-    NSString *config = [root stringByAppendingPathComponent:@"var/mobile/Library/RootHide"];
-    NSString *marker = [config stringByAppendingPathComponent:@".wm0104-source-migration-v1"];
-    struct stat markerStat;
-    if (lstat(marker.fileSystemRepresentation, &markerStat) == 0) {
-        if (!S_ISREG(markerStat.st_mode) || markerStat.st_nlink != 1) { if (error) *error = DOSE(@"Unsafe migration marker."); return NO; }
-        return YES;
-    }
-    NSString *apt = [root stringByAppendingPathComponent:@"etc/apt/sources.list.d"];
-    struct stat aptStat;
-    if (lstat(apt.fileSystemRepresentation, &aptStat) || !S_ISDIR(aptStat.st_mode)) {
-        if (error) *error = DOSE(@"APT source directory is unavailable."); return NO;
-    }
-    NSArray *names = [fm contentsOfDirectoryAtPath:apt error:error];
-    if (!names || names.count > 500) { if (error && !*error) *error = DOSE(@"Too many source files."); return NO; }
-    NSMutableDictionary<NSString *,NSData *> *before = [NSMutableDictionary dictionary];
-    NSMutableDictionary<NSString *,NSData *> *after = [NSMutableDictionary dictionary];
-    NSMutableDictionary<NSString *,NSDictionary *> *attributes = [NSMutableDictionary dictionary];
-    BOOL ownsAPT = NO;
-    for (NSString *name in names) {
-        if (![@[@"list",@"sources"] containsObject:name.pathExtension.lowercaseString]) continue;
-        NSString *path = [apt stringByAppendingPathComponent:name];
-        NSData *data = DOReadSource(path,error);
-        if (!data) return NO;
-        NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-        if (!text) { if (error) *error = DOSE(@"Source configuration is not UTF-8."); return NO; }
-        NSString *clean = [self sanitizedSourceText:text deb822:[name.pathExtension.lowercaseString isEqualToString:@"sources"] error:error];
-        if (!clean) return NO;
-        ownsAPT |= DOHasOwnedURI(clean);
-        if (![clean isEqualToString:text]) {
-            before[path] = data; after[path] = [clean dataUsingEncoding:NSUTF8StringEncoding];
-            attributes[path] = [fm attributesOfItemAtPath:path error:error];
-            if (!attributes[path]) return NO;
+    if (!root.length || ![root hasPrefix:@"/"] || [root isEqual:@"/"]) return BFail(error, @"No active RootHide environment");
+    // Resolve only fixed runtime anchors (RootHide's var link is intentional).
+    NSString *library = BCanonical([root stringByAppendingPathComponent:@"var/mobile/Library"]);
+    NSString *apt = BCanonical([root stringByAppendingPathComponent:@"etc/apt"]);
+    int lfd = BOpenDirectory(library), afd = BOpenDirectory(apt), cfd = -1;
+    if (lfd < 0 || afd < 0) { if (lfd >= 0) close(lfd); if (afd >= 0) close(afd); return BFail(error, @"Runtime source anchors unavailable"); }
+    @try {
+        NSMutableArray *created = [NSMutableArray array];
+        cfd = BParent(lfd, @"RootHide/.marker", YES, 501, 501, created);
+        if (cfd < 0) return BFail(error, @"Unsafe RootHide directory");
+        BOOL missing = NO;
+        NSData *marker = BRead(cfd, @".wm0104-source-migration-v1", NULL, &missing, error);
+        if (marker) return YES;
+        if (!missing) return NO;
+        NSMutableArray *paths = [NSMutableArray arrayWithObject:@"apt/sources.list"];
+        int dfd = BParent(afd, @"sources.list.d/.entry", NO, 0, 0, nil);
+        if (dfd < 0) return BFail(error, @"APT sources directory unavailable");
+        DIR *dir = fdopendir(dfd);
+        if (!dir) { close(dfd); return BFail(error, @"Cannot enumerate sources"); }
+        struct dirent *entry; BOOL valid = YES; NSUInteger count = 0;
+        while ((entry = readdir(dir))) {
+            NSString *name = [NSString stringWithUTF8String:entry->d_name];
+            if ([name isEqual:@"."] || [name isEqual:@".."]) continue;
+            if (!name || !BPath(name) || ++count > 500) { valid = NO; break; }
+            if ([@[@"list", @"sources"] containsObject:name.pathExtension]) [paths addObject:[@"apt/sources.list.d" stringByAppendingPathComponent:name]];
         }
-    }
-    if (!ownsAPT) {
-        NSString *path = [apt stringByAppendingPathComponent:@"wm0104-custom.sources"];
-        if ([fm fileExistsAtPath:path]) { if (error) *error = DOSE(@"wm0104-custom.sources already exists with different contents; please rename it first."); return NO; }
-        after[path] = [[NSString stringWithFormat:@"Types: deb\nURIs: %@\nSuites: ./\nComponents:\n",DOOwnedSource] dataUsingEncoding:NSUTF8StringEncoding];
-    }
-    NSString *zebra = [root stringByAppendingPathComponent:@"var/mobile/Library/Application Support/xyz.willy.Zebra/sources.list"];
-    struct stat zebraStat;
-    if (lstat(zebra.fileSystemRepresentation, &zebraStat) == 0) {
-        NSData *data = DOReadSource(zebra,error);
-        if (!data) return NO;
-        NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-        NSString *clean = text ? [self sanitizedSourceText:text deb822:NO error:error] : nil;
-        if (!clean) { if (error && !*error) *error = DOSE(@"Zebra sources are not valid UTF-8."); return NO; }
-        if (!DOHasOwnedURI(clean)) clean = [clean stringByAppendingFormat:@"\ndeb %@ ./\n",DOOwnedSource];
-        if (![clean isEqualToString:text]) {
-            before[zebra] = data; after[zebra] = [clean dataUsingEncoding:NSUTF8StringEncoding];
-            attributes[zebra] = [fm attributesOfItemAtPath:zebra error:error];
-            if (!attributes[zebra]) return NO;
+        closedir(dir); if (!valid) return BFail(error, @"Invalid source directory entries");
+        [paths addObject:@"library/Application Support/xyz.willy.Zebra/sources.list"];
+        NSMutableDictionary *before = [NSMutableDictionary dictionary], *after = [NSMutableDictionary dictionary], *metadata = [NSMutableDictionary dictionary];
+        BOOL ownsAPT = NO;
+        for (NSString *key in paths) {
+            BOOL isAPT = [key hasPrefix:@"apt/"]; int fd = isAPT ? afd : lfd;
+            NSString *relative = [key substringFromIndex:isAPT ? 4 : 8]; struct stat st;
+            NSData *data = BRead(fd, relative, &st, &missing, error);
+            if (!data) { if (missing) continue; return NO; }
+            NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+            NSString *clean = text ? [self sanitizedSourceText:text deb822:[key.pathExtension isEqual:@"sources"] error:error] : nil;
+            if (!clean) return BFail(error, @"Invalid source text; no sources changed");
+            if (isAPT) ownsAPT |= DOHasOwnedURI(clean);
+            else if (!DOHasOwnedURI(clean)) clean = [clean stringByAppendingFormat:@"\ndeb %@ ./\n", DOOwnedSource];
+            if (![text isEqual:clean]) {
+                before[key] = data; after[key] = [clean dataUsingEncoding:NSUTF8StringEncoding];
+                metadata[key] = [NSData dataWithBytes:&st length:sizeof(st)];
+            }
         }
-    }
-    // Preflight is complete. Keep an exact rollback snapshot before touching sources.
-    if (![fm createDirectoryAtPath:config withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0755} error:error]) return NO;
-    NSString *snapshot = [config stringByAppendingPathComponent:@".wm0104-sources-before-v1.plist"];
-    if (![fm fileExistsAtPath:snapshot]) {
-        NSData *data = [NSPropertyListSerialization dataWithPropertyList:before format:NSPropertyListBinaryFormat_v1_0 options:0 error:error];
-        if (!data || ![data writeToFile:snapshot options:NSDataWritingAtomic error:error]) return NO;
-        if (![fm setAttributes:@{NSFilePosixPermissions:@0600} ofItemAtPath:snapshot error:error]) return NO;
-    }
-    NSMutableArray *written = [NSMutableArray array];
-    NSError *failure = nil;
-    for (NSString *path in [[after allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
-        [written addObject:path];
-        if (![after[path] writeToFile:path options:NSDataWritingAtomic error:&failure]) break;
-        NSDictionary *old = attributes[path];
-        NSDictionary *mode = old ? @{NSFilePosixPermissions:old[NSFilePosixPermissions],NSFileOwnerAccountID:old[NSFileOwnerAccountID],NSFileGroupOwnerAccountID:old[NSFileGroupOwnerAccountID]} : @{NSFilePosixPermissions:@0644,NSFileOwnerAccountID:@0,NSFileGroupOwnerAccountID:@0};
-        if (![fm setAttributes:mode ofItemAtPath:path error:&failure]) break;
-    }
-    if (!failure && ![@"1\n" writeToFile:marker atomically:YES encoding:NSUTF8StringEncoding error:&failure]) {}
-    if (!failure) return YES;
-    NSMutableArray *rollbackFailures = [NSMutableArray array];
-    for (NSString *path in written.reverseObjectEnumerator) {
-        NSError *rollbackError = nil;
-        if (before[path]) {
-            if (![before[path] writeToFile:path options:NSDataWritingAtomic error:&rollbackError] ||
-                ![fm setAttributes:@{NSFilePosixPermissions:attributes[path][NSFilePosixPermissions],NSFileOwnerAccountID:attributes[path][NSFileOwnerAccountID],NSFileGroupOwnerAccountID:attributes[path][NSFileGroupOwnerAccountID]} ofItemAtPath:path error:&rollbackError])
-                [rollbackFailures addObject:path.lastPathComponent];
-        } else if ([fm fileExistsAtPath:path] && ![fm removeItemAtPath:path error:&rollbackError]) [rollbackFailures addObject:path.lastPathComponent];
-    }
-    if (error) *error = rollbackFailures.count ? DOSE([NSString stringWithFormat:@"%@ Rollback failed for %@. Safety snapshot: %@", failure.localizedDescription,[rollbackFailures componentsJoinedByString:@", "],snapshot]) : failure;
-    return NO;
+        if (!ownsAPT) {
+            NSString *key = @"apt/sources.list.d/wm0104-custom.sources";
+            NSData *old = BRead(afd, @"sources.list.d/wm0104-custom.sources", NULL, &missing, error);
+            if (old || !missing) return BFail(error, @"wm0104-custom.sources exists; rename it before migration");
+            after[key] = [[NSString stringWithFormat:@"Types: deb\nURIs: %@\nSuites: ./\nComponents:\n", DOOwnedSource] dataUsingEncoding:NSUTF8StringEncoding];
+        }
+        struct stat mode = {0}; mode.st_mode = 0600; mode.st_uid = getuid(); mode.st_gid = getgid();
+        NSData *saved = BRead(cfd, @".wm0104-sources-before-v1.plist", NULL, &missing, error);
+        if (!saved && !missing) return NO;
+        if (!saved) {
+            NSData *data = [NSPropertyListSerialization dataWithPropertyList:before format:NSPropertyListBinaryFormat_v1_0 options:0 error:error];
+            if (!data || !BWrite(cfd, @".wm0104-sources-before-v1.plist", data, mode, -1, nil, error)) return NO;
+        }
+        // Pinned directory descriptors are used for preflight, writes AND rollback.
+        for (NSString *key in after) {
+            BOOL isAPT = [key hasPrefix:@"apt/"];
+            NSData *now = BRead(isAPT ? afd : lfd, [key substringFromIndex:isAPT ? 4 : 8], NULL, &missing, error);
+            if ((before[key] && ![now isEqual:before[key]]) || (!before[key] && !missing)) return BFail(error, @"Source changed during migration; no writes applied");
+        }
+        NSMutableArray *written = [NSMutableArray array]; NSError *failure = nil;
+        for (NSString *key in [after.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+            struct stat st = {0}; st.st_mode = 0644; st.st_uid = getuid(); st.st_gid = getgid();
+            if (metadata[key]) [metadata[key] getBytes:&st length:sizeof(st)];
+            BOOL isAPT = [key hasPrefix:@"apt/"]; [written addObject:key];
+            if (!BWrite(isAPT ? afd : lfd, [key substringFromIndex:isAPT ? 4 : 8], after[key], st, -1, nil, &failure)) break;
+        }
+        if (!failure && !BWrite(cfd, @".wm0104-source-migration-v1", [@"1\n" dataUsingEncoding:NSUTF8StringEncoding], mode, -1, nil, &failure)) {}
+        if (!failure) return YES;
+        BOOL rollback = YES;
+        for (NSString *key in written.reverseObjectEnumerator) {
+            BOOL isAPT = [key hasPrefix:@"apt/"]; int fd = isAPT ? afd : lfd; NSString *relative = [key substringFromIndex:isAPT ? 4 : 8];
+            if (before[key]) {
+                struct stat st; [metadata[key] getBytes:&st length:sizeof(st)];
+                if (!BWrite(fd, relative, before[key], st, -1, nil, nil)) rollback = NO;
+            } else {
+                int p = BParent(fd, relative, NO, 0, 0, nil);
+                if (p < 0) rollback = NO;
+                else { if (unlinkat(p, relative.lastPathComponent.fileSystemRepresentation, 0) && errno != ENOENT) rollback = NO; close(p); }
+            }
+        }
+        unlinkat(cfd, ".wm0104-source-migration-v1", 0);
+        return BFail(error, [NSString stringWithFormat:@"%@. %@; snapshot: RootHide/.wm0104-sources-before-v1.plist", failure.localizedDescription, rollback ? @"Sources rolled back" : @"Rollback incomplete"]);
+    } @finally { if (cfd >= 0) close(cfd); close(lfd); close(afd); }
 }
 @end
