@@ -15,8 +15,55 @@ class BackupUIGuards(unittest.TestCase):
         for token in ("DOButtonCell.class", "DOHeaderCell.class", "PSSwitchCell", "PSButtonCell"):
             self.assertIn(token, SOURCE)
         self.assertNotIn("UITableViewStyleInsetGrouped", SOURCE)
-        self.assertIn("pushViewController:list animated:YES", SOURCE)
+        settings = (ROOT / "Application/Dopamine/UI/Settings/DOSettingsController.m").read_text()
+        self.assertIn("pushViewController:[[DOBackupController alloc] init] animated:YES", settings)
+        self.assertNotIn("pushViewController:", SOURCE)
         self.assertNotIn("setNavigationControllerDelegate", SOURCE)
+
+    def test_two_primary_actions_and_inline_restore(self):
+        specifiers = SOURCE.split("- (NSArray *)specifiers", 1)[1].split("- (id)scopeValue:", 1)[0]
+        self.assertEqual(specifiers.count("[self button:"), 2)
+        self.assertIn('action:@"createPressed:"', specifiers)
+        self.assertIn('action:@"browsePressed:"', specifiers)
+        self.assertIn('more.buttonAction = @selector(morePressed:)', specifiers)
+        picker = SOURCE.split("- (void)chooseDirectoryForRestore:", 1)[1].split("- (void)documentPickerWasCancelled:", 1)[0]
+        self.assertIn("UIDocumentPickerViewController", picker)
+        self.assertNotIn("UIAlertController", picker)
+        listing = SOURCE.split("- (void)showBackups:", 1)[1].split("- (void)browsePressed:", 1)[0]
+        self.assertIn("self.backupFiles =", listing)
+        self.assertIn("[self refresh]", listing)
+        self.assertNotIn("pushViewController", listing)
+        selected = SOURCE.split("- (void)backupPressed:", 1)[1].split("- (void)confirmRestore:", 1)[0]
+        self.assertIn("[self confirmRestore:url]", selected)
+        self.assertNotIn("UIAlertController", selected)
+
+    def test_first_backup_continues_only_after_explicit_request(self):
+        create = SOURCE.split("- (void)createPressed:", 1)[1].split("- (void)backupPressed:", 1)[0]
+        self.assertIn("self.backupAfterChoosing = YES", create)
+        self.assertIn("[self chooseDirectoryForRestore:NO]", create)
+        accept = SOURCE.split("- (void)acceptDirectory:(NSURL *)url restore:(BOOL)restore local:", 1)[1].split("- (void)clearRestoreList", 1)[0]
+        self.assertIn("self.backupAfterChoosing && !restore", accept)
+        self.assertIn("if (createAfterSelection) [self createPressed:nil]", accept)
+        cancel = SOURCE.split("- (void)documentPickerWasCancelled:", 1)[1].split("- (void)documentPicker:", 1)[0]
+        self.assertIn("self.backupAfterChoosing = NO", cancel)
+        load = SOURCE.split("- (void)loadStoredDirectory", 1)[1].split("- (void)anchorPopover:", 1)[0]
+        self.assertNotIn("createPressed:", load)
+
+    def test_optional_sharing_waits_for_alert_dismissal(self):
+        self.assertIn("dismissViewControllerAnimated:YES completion:^{ [self shareURL:result directory:directory]", SOURCE)
+        self.assertIn("dismissViewControllerAnimated:YES completion:^{ [self shareURL:url directory:self.restoreDirectory]", SOURCE)
+        scope = SOURCE.split("- (void)clearRestoreList", 1)[1].split("- (void)showBackups:", 1)[0]
+        self.assertIn("stopAccessingSecurityScopedResource", scope)
+        self.assertIn("self.restoreScopeHeld = NO", scope)
+
+    def test_empty_refresh_replaces_stale_rows_and_share_ignores_restore_scope(self):
+        listing = SOURCE.split("- (void)showBackups:", 1)[1].split("- (void)browsePressed:", 1)[0]
+        self.assertLess(listing.index("self.backupFiles ="), listing.index("if (!files.count)"))
+        confirm = SOURCE.split("- (void)confirmRestore:", 1)[1].split("- (void)shareURL:", 1)[0]
+        self.assertIn("restoreAction.enabled = preferences || sources", confirm)
+        self.assertIn('BT(@"Backup_Share",', confirm)
+        early_scope = confirm.split("NSMutableArray *scope", 1)[0]
+        self.assertNotIn("if (!preferences && !sources)", early_scope)
 
     def test_added_copy_has_no_parenthetical_labels(self):
         translations = re.findall(r'BT\(@"([^"\n]+)", @"([^"\n]*)", @"([^"\n]*)"\)', SOURCE)

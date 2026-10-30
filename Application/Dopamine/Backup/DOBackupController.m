@@ -43,6 +43,7 @@ static dispatch_queue_t BackupUIQueue(void) {
 @property(nonatomic) BOOL preferences;
 @property(nonatomic) BOOL sources;
 @property(nonatomic) BOOL choosingRestore;
+@property(nonatomic) BOOL backupAfterChoosing;
 @property(nonatomic) BOOL busy;
 @property(nonatomic, strong) UINavigationController *lockedNavigation;
 @property(nonatomic) BOOL previousNavigationInteraction;
@@ -75,7 +76,7 @@ static dispatch_queue_t BackupUIQueue(void) {
         [self.spinner.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-24],
         [self.spinner.topAnchor constraintEqualToAnchor:self.view.topAnchor constant:20]
     ]];
-    if (!self.restoreDirectory) [self loadStoredDirectory];
+    [self loadStoredDirectory];
 }
 
 - (BOOL)canPresent {
@@ -112,22 +113,19 @@ static dispatch_queue_t BackupUIQueue(void) {
     if (_specifiers) return _specifiers;
     NSMutableArray *items = [NSMutableArray array];
     NSString *privacy = BT(@"Backup_Privacy", @"仅备份配置，不安装或恢复插件。配置可能包含账户、令牌等私人信息，请妥善保管，不要公开分享。", @"Configuration only: this does not install or restore tweaks. Configuration may contain accounts, tokens and other private data. Keep backups private.");
-    NSString *location = (self.restoreDirectory ?: self.storageDirectory).path;
+    NSString *location = self.storageDirectory.path;
     [items addObject:[self group:self.title ?: BT(@"Backup_Title", @"配置备份与恢复", @"Configuration Backup & Restore") footer:privacy]];
-    [items addObject:[self group:BT(@"Backup_Location", @"所选目录", @"Selected Folder") footer:location ?: BT(@"Backup_NoFolder", @"尚未选择目录。请选择自己的持久目录；不会使用隐藏的默认路径。", @"No folder selected. Choose a persistent folder; no hidden default location is used.")]];
+    [items addObject:[self group:BT(@"Backup_Location", @"备份位置", @"Backup Folder") footer:location ?: BT(@"Backup_NoFolder", @"首次备份时选择保存目录，之后自动记住。", @"Choose a folder for the first backup; it will be remembered.")]];
+    [items addObject:[self button:BT(@"Backup_Create", @"备份配置", @"Back Up Configuration") image:@"archivebox" action:@"createPressed:"]];
+    [items addObject:[self button:BT(@"Backup_BrowseSaved", @"恢复配置", @"Restore Configuration") image:@"clock.arrow.circlepath" action:@"browsePressed:"]];
     if (self.restoreDirectory) {
-        [items addObject:[self group:BT(@"Backup_Files", @"选择备份", @"Choose Backup") footer:BT(@"Backup_ListHint", @"仅列出引擎识别的新旧格式备份。点击后可选择恢复或分享；恢复前会再次确认。", @"Only supported current and legacy backups are listed. Tap to restore or share; restore requires confirmation.")]];
+        [items addObject:[self group:BT(@"Backup_Files", @"选择备份", @"Choose Backup") footer:self.restoreDirectory.path]];
         for (NSURL *url in self.backupFiles) {
             PSSpecifier *file = [PSSpecifier preferenceSpecifierNamed:url.lastPathComponent target:self set:NULL get:NULL detail:nil cell:PSButtonCell edit:nil];
             file.buttonAction = @selector(backupPressed:);
             [file setProperty:url forKey:@"backupURL"];
             [items addObject:file];
         }
-    } else {
-        [items addObject:[self button:BT(@"Backup_ChooseFolder", @"选择或更改备份目录", @"Choose / Change Backup Folder") image:@"folder" action:@"chooseStoragePressed:"]];
-        [items addObject:[self button:BT(@"Backup_Create", @"立即手动备份", @"Back Up Now") image:@"archivebox" action:@"createPressed:"]];
-        [items addObject:[self button:BT(@"Backup_BrowseSaved", @"浏览所选目录的备份", @"Browse Selected Folder") image:@"clock.arrow.circlepath" action:@"browsePressed:"]];
-        [items addObject:[self button:BT(@"Backup_RestoreOther", @"从其他目录选择备份", @"Choose Backup from Another Folder") image:@"folder.badge.plus" action:@"chooseRestorePressed:"]];
     }
     [items addObject:[self group:BT(@"Backup_RestoreScope", @"恢复内容", @"Restore Contents") footer:BT(@"Backup_ScopeHint", @"只恢复勾选的内容，覆盖对应配置。关闭的项目保持不变。操作仅在已越狱环境中可用，不会自动执行或自动注销。", @"Selected contents overwrite matching configuration; unselected contents stay unchanged. Requires an active jailbreak. Nothing runs or resprings automatically.")]];
     for (NSString *key in @[@"preferences", @"sources"]) {
@@ -136,6 +134,9 @@ static dispatch_queue_t BackupUIQueue(void) {
         [toggle setProperty:key forKey:@"key"];
         [items addObject:toggle];
     }
+    PSSpecifier *more = [PSSpecifier preferenceSpecifierNamed:BT(@"Backup_More", @"更多选项", @"More Options") target:self set:NULL get:NULL detail:nil cell:PSButtonCell edit:nil];
+    more.buttonAction = @selector(morePressed:);
+    [items addObject:more];
     [items addObject:[self group:BT(@"Backup_Status", @"操作结果", @"Status") footer:self.statusText ?: BT(@"Backup_Ready", @"等待手动操作。", @"Waiting for a manual action.")]];
     _specifiers = items;
     return _specifiers;
@@ -245,25 +246,50 @@ static dispatch_queue_t BackupUIQueue(void) {
     controller.popoverPresentationController.permittedArrowDirections = 0;
 }
 
-- (void)chooseStoragePressed:(id)sender { [self chooseDirectoryForRestore:NO]; }
+- (void)chooseStoragePressed:(id)sender {
+    self.backupAfterChoosing = NO;
+    [self chooseDirectoryForRestore:NO];
+}
 - (void)chooseRestorePressed:(id)sender {
+    self.backupAfterChoosing = NO;
     if ([self requireJailbreak]) [self chooseDirectoryForRestore:YES];
 }
 
-- (void)chooseDirectoryForRestore:(BOOL)restore {
+- (void)morePressed:(id)sender {
     if (self.busy || ![self canPresent]) return;
-    self.choosingRestore = restore;
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:BT(@"Backup_ChooseMethod", @"选择目录方式", @"Choose Folder Method") message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:BT(@"Backup_FilesApp", @"文件 App", @"Files App") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeFolder] asCopy:NO];
-        picker.delegate = self;
-        picker.allowsMultipleSelection = NO;
-        [self presentViewController:picker animated:YES completion:nil];
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:BT(@"Backup_More", @"更多选项", @"More Options") message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak UIAlertController *weakSheet = sheet;
+    [sheet addAction:[UIAlertAction actionWithTitle:BT(@"Backup_ChooseFolder", @"更换备份目录", @"Change Backup Folder") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [weakSheet dismissViewControllerAnimated:YES completion:^{ [self chooseStoragePressed:nil]; }];
     }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:BT(@"Backup_LocalPath", @"本地绝对路径", @"Local Absolute Path") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) { [self askLocalPath]; }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:BT(@"Backup_LocalPath", @"本地绝对路径", @"Local Absolute Path") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [weakSheet dismissViewControllerAnimated:YES completion:^{
+            self.backupAfterChoosing = NO;
+            self.choosingRestore = NO;
+            [self askLocalPath];
+        }];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:BT(@"Backup_RestoreOther", @"从其他目录恢复", @"Restore from Another Folder") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [weakSheet dismissViewControllerAnimated:YES completion:^{ [self chooseRestorePressed:nil]; }];
+    }]];
     [sheet addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Cancel", @"取消", @"Cancel") style:UIAlertActionStyleCancel handler:nil]];
     [self anchorPopover:sheet];
     [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)chooseDirectoryForRestore:(BOOL)restore {
+    if (self.busy || ![self canPresent]) { self.backupAfterChoosing = NO; return; }
+    self.choosingRestore = restore;
+    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeFolder] asCopy:NO];
+    picker.delegate = self;
+    picker.allowsMultipleSelection = NO;
+    if (self.storageDirectory) picker.directoryURL = self.storageDirectory;
+    [self presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
+    self.backupAfterChoosing = NO;
+    [controller dismissViewControllerAnimated:YES completion:nil];
 }
 
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
@@ -291,6 +317,11 @@ static dispatch_queue_t BackupUIQueue(void) {
         // Canonicalization and provider I/O belong to the worker, not UIKit.
         [self acceptDirectory:[NSURL fileURLWithPath:path isDirectory:YES] restore:self.choosingRestore local:YES];
     }]];
+    [alert addAction:[UIAlertAction actionWithTitle:BT(@"Backup_RestoreHere", @"从此目录恢复", @"Restore from This Folder") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        NSString *path = weakAlert.textFields.firstObject.text ?: @"";
+        if (![path hasPrefix:@"/"]) { [self showError:BUIError(BT(@"Backup_AbsoluteRequired", @"必须填写绝对路径。", @"An absolute path is required."))]; return; }
+        [self acceptDirectory:[NSURL fileURLWithPath:path isDirectory:YES] restore:YES local:YES];
+    }]];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
@@ -299,6 +330,8 @@ static dispatch_queue_t BackupUIQueue(void) {
 }
 
 - (void)acceptDirectory:(NSURL *)url restore:(BOOL)restore local:(BOOL)local {
+    BOOL createAfterSelection = self.backupAfterChoosing && !restore;
+    self.backupAfterChoosing = NO;
     [self performAtURL:url work:^id(NSError **error) {
         NSURL *directory = url;
         if (local) {
@@ -337,40 +370,47 @@ static dispatch_queue_t BackupUIQueue(void) {
         if (restore) {
             [self showBackups:result[@"files"] directory:result[@"directory"]];
         } else {
+            [self clearRestoreList];
             self.storageDirectory = result[@"directory"];
             [[NSUserDefaults standardUserDefaults] setObject:result[@"bookmark"] forKey:BookmarkKey];
             self.statusText = BT(@"Backup_FolderReady", @"目录已验证。", @"Folder verified.");
+            if (createAfterSelection) [self createPressed:nil];
         }
     }];
 }
 
+- (void)clearRestoreList {
+    if (self.restoreScopeHeld) [self.restoreDirectory stopAccessingSecurityScopedResource];
+    self.restoreScopeHeld = NO;
+    self.restoreDirectory = nil;
+    self.backupFiles = nil;
+}
+
 - (void)showBackups:(NSArray<NSURL *> *)files directory:(NSURL *)directory {
-    if (!files.count) {
-        [self showError:BUIError(BT(@"Backup_Empty", @"此目录没有可识别的备份。请在其他目录查找原有备份。", @"No supported backups in this folder. Choose another folder to find existing backups."))];
-        return;
+    if (![directory isEqual:self.restoreDirectory]) {
+        BOOL scoped = [directory startAccessingSecurityScopedResource];
+        [self clearRestoreList];
+        self.restoreDirectory = directory;
+        self.restoreScopeHeld = scoped;
     }
-    if (![self canPresent]) return;
-    DOBackupController *list = [[DOBackupController alloc] init];
-    list.restoreDirectory = directory;
-    list.restoreScopeHeld = [directory startAccessingSecurityScopedResource];
-    list.backupFiles = files;
-    list.preferences = self.preferences;
-    list.sources = self.sources;
-    // Existing DONavigationController supplies the original DOModal push animation.
-    [self.navigationController pushViewController:list animated:YES];
+    self.backupFiles = [[files reverseObjectEnumerator] allObjects];
+    [self refresh];
+    if (!files.count) [self showError:BUIError(BT(@"Backup_Empty", @"此目录没有可识别的备份。请在其他目录查找原有备份。", @"No supported backups in this folder. Choose another folder to find existing backups."))];
 }
 
 - (void)browsePressed:(id)sender {
     if (![self requireJailbreak]) return;
-    if (!self.storageDirectory) { [self chooseDirectoryForRestore:YES]; return; }
-    [self acceptDirectory:self.storageDirectory restore:YES];
+    NSURL *directory = self.restoreDirectory ?: self.storageDirectory;
+    if (!directory) { [self chooseDirectoryForRestore:YES]; return; }
+    [self acceptDirectory:directory restore:YES];
 }
 
 - (void)createPressed:(id)sender {
     if (![self requireJailbreak]) return;
     NSURL *directory = self.storageDirectory;
     if (!directory) {
-        [self showError:BUIError(BT(@"Backup_SelectFirst", @"请先选择并验证备份目录。", @"Choose and verify a backup folder first."))];
+        self.backupAfterChoosing = YES;
+        [self chooseDirectoryForRestore:NO];
         return;
     }
     [self performAtURL:directory work:^id(NSError **error) {
@@ -394,7 +434,10 @@ static dispatch_queue_t BackupUIQueue(void) {
         if (![self canPresent]) return;
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:BT(@"Backup_Created", @"备份已完成", @"Backup Complete") message:self.statusText preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Done", @"完成", @"Done") style:UIAlertActionStyleCancel handler:nil]];
-        [alert addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Share", @"分享备份", @"Share Backup") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) { [self shareURL:result directory:directory]; }]];
+        __weak UIAlertController *weakAlert = alert;
+        [alert addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Share", @"分享备份", @"Share Backup") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            [weakAlert dismissViewControllerAnimated:YES completion:^{ [self shareURL:result directory:directory]; }];
+        }]];
         [self presentViewController:alert animated:YES completion:nil];
     }];
 }
@@ -402,29 +445,24 @@ static dispatch_queue_t BackupUIQueue(void) {
 - (void)backupPressed:(PSSpecifier *)specifier {
     if (self.busy || ![self canPresent]) return;
     NSURL *url = [specifier propertyForKey:@"backupURL"];
-    if (!url) return;
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:url.lastPathComponent message:url.URLByDeletingLastPathComponent.path preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Restore", @"恢复所选内容…", @"Restore Selected Contents…") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) { [self confirmRestore:url]; }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Share", @"分享备份", @"Share Backup") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) { [self shareURL:url directory:self.restoreDirectory]; }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Cancel", @"取消", @"Cancel") style:UIAlertActionStyleCancel handler:nil]];
-    [self anchorPopover:sheet];
-    [self presentViewController:sheet animated:YES completion:nil];
+    if (url) [self confirmRestore:url];
 }
 
 - (void)confirmRestore:(NSURL *)url {
     if (![self requireJailbreak]) return;
     BOOL preferences = self.preferences, sources = self.sources;
-    if (!preferences && !sources) {
-        [self showError:BUIError(BT(@"Backup_ChooseScope", @"至少选择一项恢复内容。", @"Select at least one restore category."))];
-        return;
-    }
     NSMutableArray *scope = [NSMutableArray array];
+    if (!preferences && !sources) [scope addObject:BT(@"Backup_ChooseScope", @"至少选择一项恢复内容。", @"Select at least one restore category.")];
     if (preferences) [scope addObject:BT(@"Backup_Preferences", @"偏好设置", @"Preferences")];
     if (sources) [scope addObject:BT(@"Backup_Sources", @"软件源", @"Package Sources")];
     NSString *message = [NSString stringWithFormat:@"%@\n%@\n\n%@\n%@", url.lastPathComponent, url.URLByDeletingLastPathComponent.path, [scope componentsJoinedByString:@", "], BT(@"Backup_OverwriteWarning", @"将覆盖上述现有配置，其余内容不变。不安装插件。请仅恢复可信的备份。继续？", @"This overwrites the existing configuration listed above; other contents stay unchanged. No tweaks are installed. Restore only trusted backups. Continue?")];
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:BT(@"Backup_ConfirmRestore", @"确认恢复", @"Confirm Restore") message:message preferredStyle:UIAlertControllerStyleAlert];
+    __weak UIAlertController *weakAlert = alert;
+    [alert addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Share", @"分享备份", @"Share Backup") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [weakAlert dismissViewControllerAnimated:YES completion:^{ [self shareURL:url directory:self.restoreDirectory]; }];
+    }]];
     [alert addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Cancel", @"取消", @"Cancel") style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Restore", @"恢复所选内容…", @"Restore Selected Contents…") style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+    UIAlertAction *restoreAction = [UIAlertAction actionWithTitle:BT(@"Backup_Restore", @"恢复所选内容…", @"Restore Selected Contents…") style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
         if (![self requireJailbreak]) return;
         [self performAtURL:self.restoreDirectory work:^id(NSError **error) {
             if (![DOEnvironmentManager sharedManager].isJailbroken) {
@@ -437,7 +475,9 @@ static dispatch_queue_t BackupUIQueue(void) {
             self.statusText = [NSString stringWithFormat:@"%@\n%@\n%@", BT(@"Backup_Restored", @"配置恢复成功，未自动注销。", @"Configuration restored. No automatic respring."), url.lastPathComponent, self.restoreDirectory.path];
             [self offerRespring];
         }];
-    }]];
+    }];
+    restoreAction.enabled = preferences || sources;
+    [alert addAction:restoreAction];
     if ([self canPresent]) [self presentViewController:alert animated:YES completion:nil];
 }
 
