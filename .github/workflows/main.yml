@@ -58,6 +58,8 @@ jobs:
         run: |
           clang -fobjc-arc -fmodules -framework Foundation -IApplication/Dopamine/Backup Tests/source_migration_tests.m Application/Dopamine/Backup/DOSourceMigration.m -o "$RUNNER_TEMP/source-tests"
           sudo "$RUNNER_TEMP/source-tests"
+          clang -fobjc-arc -fmodules -framework Foundation -IApplication/Dopamine/Extensions Tests/version_identity_tests.m Application/Dopamine/Extensions/NSString+Version.m -o "$RUNNER_TEMP/version-tests"
+          "$RUNNER_TEMP/version-tests"
       - name: Run custom regression checks
         run: |
           for test in Tests/*_checks.py; do

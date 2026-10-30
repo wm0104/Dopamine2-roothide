@@ -32,6 +32,13 @@ int main(void) { @autoreleasepool {
  NSArray *listed = [m backupsInDirectory:[NSURL fileURLWithPath:store] error:&e];
  if (listed.count != 1) NSLog(@"Backup enumeration: %@, error: %@", listed, e);
  CHECK(listed.count==1);
+ // Names are readable in Files/Filza and must never overwrite an existing backup.
+ CHECK([backup.lastPathComponent hasPrefix:@"配置备份_"]);
+ NSRegularExpression *stampRule=[NSRegularExpression regularExpressionWithPattern:@"^配置备份_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}(-[0-9]+)?$" options:0 error:nil];
+ CHECK([stampRule numberOfMatchesInString:backup.lastPathComponent options:0 range:NSMakeRange(0,backup.lastPathComponent.length)]==1);
+ NSURL *again=[m createBackupInDirectory:[NSURL fileURLWithPath:store] error:&e];
+ if (!again) NSLog(@"Second backup: %@",e); CHECK(again && ![again.path isEqualToString:backup.path]);
+ CHECK([NSFileManager.defaultManager removeItemAtURL:again error:nil]);
  NSString *edited=[backup.path stringByAppendingPathComponent:@"config/Preferences/org.example.anytweak.plist"];
  Put(edited,Plist(@"manual-edit")); Put(a,Plist(@"current")); chmod(a.fileSystemRepresentation,0600);
  CHECK([m restoreBackupAtURL:backup restorePreferences:YES restoreSources:NO error:&e]);

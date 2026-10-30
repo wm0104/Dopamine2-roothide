@@ -65,6 +65,23 @@ static NSArray<NSString *> *BSourceUnits(NSString *text, BOOL deb822) {
     return units;
 }
 
+// Backups are user-visible in Files/Filza, so the name carries the creation time.
+// A short suffix only appears when two backups would otherwise collide.
+static NSString *BArchiveName(BOOL safety, int base) {
+    NSDateFormatter *formatter = [NSDateFormatter new];
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    formatter.dateFormat = @"yyyy-MM-dd_HH-mm-ss";
+    NSString *prefix = safety ? @"恢复前备份" : @"配置备份";
+    NSString *stamp = [formatter stringFromDate:[NSDate date]];
+    for (int attempt = 0; attempt < 100; attempt++) {
+        NSString *name = attempt ? [NSString stringWithFormat:@"%@_%@-%d", prefix, stamp, attempt + 1]
+                                 : [NSString stringWithFormat:@"%@_%@", prefix, stamp];
+        struct stat existing;
+        if (fstatat(base, name.fileSystemRepresentation, &existing, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT) return name;
+    }
+    return nil;
+}
+
 @interface DOConfigurationBackupManager ()
 @property(nonatomic, copy) NSString *testRoot;
 @property(nonatomic, copy, readwrite) NSDictionary<NSString *, id> *lastBackupReport;
@@ -255,7 +272,8 @@ static NSArray<NSString *> *BSourceUnits(NSString *text, BOOL deb822) {
     if (base < 0) { BFail(error, @"Storage folder became unavailable"); return nil; }
     NSString *uuid = NSUUID.UUID.UUIDString;
     NSString *stage = [@".staging-" stringByAppendingString:uuid];
-    NSString *name = [NSString stringWithFormat:@"%@-%@", safety ? @"SafetyBackup" : @"ConfigurationBackup", uuid];
+    NSString *name = BArchiveName(safety, base);
+    if (!name) { close(base); BFail(error, @"Cannot choose a free backup name"); return nil; }
     BOOL ok = mkdirat(base, stage.fileSystemRepresentation, 0700) == 0;
     int fd = ok ? openat(base, stage.fileSystemRepresentation, O_RDONLY | O_DIRECTORY | O_NOFOLLOW) : -1;
     struct stat mode = {0}; mode.st_mode = 0600; mode.st_uid = getuid(); mode.st_gid = getgid();

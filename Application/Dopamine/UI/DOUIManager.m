@@ -137,7 +137,7 @@ static const BOOL DOVersionUpdateCheckEnabled = NO;
 - (NSString*)getLaunchedReleaseTag
 {
 /******************************************************** roothide specfic *******************************************************/
-    return [[[[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"] componentsSeparatedByString:@"-"] lastObject];
+    return [NSString environmentVersionFromInfoDictionary:[NSBundle mainBundle].infoDictionary];
 /*********************************************************************************************************************************/
 }
 

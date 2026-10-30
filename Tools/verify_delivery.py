@@ -64,6 +64,9 @@ with tempfile.TemporaryDirectory() as temp:
     assert ent.get('platform-application') is True and ent.get('com.apple.private.security.no-sandbox') is True
     assert info['CFBundleIdentifier'] == 'cn.zqbb.dopaRH'
     assert 'wm0104' in info['CFBundleShortVersionString']
+    # The RootHide environment version must be explicit: a custom revision suffix
+    # made the old last-'-' parsing report a permanent environment update.
+    assert info['DORootHideVersion'] == (repo/'BaseBin/_external/basebin/.version-roothide').read_text().strip()
     assert (app/'roothideWhite.deb').is_file() and (app/'basebin.tar').is_file()
     assert not (app/'Frameworks/palera1n.framework').exists()
     assert not (app/'bootstrap_1800.tar.zst').exists()

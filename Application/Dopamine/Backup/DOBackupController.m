@@ -125,7 +125,7 @@ static dispatch_queue_t BackupUIQueue(void) {
         }
     } else {
         [items addObject:[self button:BT(@"Backup_ChooseFolder", @"选择或更改备份目录", @"Choose / Change Backup Folder") image:@"folder" action:@"chooseStoragePressed:"]];
-        [items addObject:[self button:BT(@"Backup_Create", @"立即手动备份", @"Back Up Now") image:@"square.and.arrow.down" action:@"createPressed:"]];
+        [items addObject:[self button:BT(@"Backup_Create", @"立即手动备份", @"Back Up Now") image:@"archivebox" action:@"createPressed:"]];
         [items addObject:[self button:BT(@"Backup_BrowseSaved", @"浏览所选目录的备份", @"Browse Selected Folder") image:@"clock.arrow.circlepath" action:@"browsePressed:"]];
         [items addObject:[self button:BT(@"Backup_RestoreOther", @"从其他目录选择备份", @"Choose Backup from Another Folder") image:@"folder.badge.plus" action:@"chooseRestorePressed:"]];
     }

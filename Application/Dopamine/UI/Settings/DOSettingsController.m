@@ -294,14 +294,14 @@
 
                 if (envManager.isJailbroken) {
                     for (NSDictionary *tool in @[
-                        @{@"title": @"Install Whitelist App", @"action": @"installWhitelistAppPressed"},
-                        @{@"title": @"Backup_And_Restore", @"action": @"backupAndRestorePressed"}
+                        @{@"title": @"Install Whitelist App", @"action": @"installWhitelistAppPressed", @"image": @"square.and.arrow.down"},
+                        @{@"title": @"Backup_And_Restore", @"action": @"backupAndRestorePressed", @"image": @"archivebox"}
                     ]) {
                         PSSpecifier *toolSpecifier = [PSSpecifier preferenceSpecifierNamed:@"" target:self set:defSetter get:defGetter detail:nil cell:PSStaticTextCell edit:nil];
                         [toolSpecifier setProperty:tool[@"title"] forKey:@"title"];
                         [toolSpecifier setProperty:DOButtonCell.class forKey:@"cellClass"];
                         [toolSpecifier setProperty:buttonHeight forKey:@"height"];
-                        [toolSpecifier setProperty:@"square.and.arrow.down" forKey:@"image"];
+                        [toolSpecifier setProperty:tool[@"image"] forKey:@"image"];
                         [toolSpecifier setProperty:tool[@"action"] forKey:@"action"];
                         [specifiers addObject:toolSpecifier];
                     }
