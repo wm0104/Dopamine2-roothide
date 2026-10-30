@@ -505,7 +505,11 @@ static NSArray<NSString *> *BSourceUnits(NSString *text, BOOL deb822) {
                 if (results.count >= BMaxFiles) return BFail(e, @"Too many backups in selected folder");
                 struct stat st;
                 if (lstat(child.path.fileSystemRepresentation, &st) || !S_ISDIR(st.st_mode)) continue;
-                if ([self loadArchive:child error:nil]) [results addObject:child];
+                NSError *archiveError = nil;
+                if ([self loadArchive:child error:&archiveError]) [results addObject:child];
+#ifdef DO_BACKUP_TESTING
+                else NSLog(@"Skipped backup %@: %@", child, archiveError);
+#endif
             }
             [results sortUsingComparator:^NSComparisonResult(NSURL *a, NSURL *b) { return [a.lastPathComponent compare:b.lastPathComponent options:NSNumericSearch]; }];
             return YES;

@@ -29,7 +29,9 @@ int main(void) { @autoreleasepool {
  CHECK(![NSFileManager.defaultManager fileExistsAtPath:[backup.path stringByAppendingPathComponent:@"config/Preferences/com.apple.test.plist"]]);
  NSDictionary *loaded = [m loadArchive:backup error:&e];
  if (!loaded) NSLog(@"Archive validation: %@ (%@)", e, backup.path); CHECK(loaded);
- CHECK([m backupsInDirectory:[NSURL fileURLWithPath:store] error:&e].count==1);
+ NSArray *listed = [m backupsInDirectory:[NSURL fileURLWithPath:store] error:&e];
+ if (listed.count != 1) NSLog(@"Backup enumeration: %@, error: %@", listed, e);
+ CHECK(listed.count==1);
  NSString *edited=[backup.path stringByAppendingPathComponent:@"config/Preferences/org.example.anytweak.plist"];
  Put(edited,Plist(@"manual-edit")); Put(a,Plist(@"current")); chmod(a.fileSystemRepresentation,0600);
  CHECK([m restoreBackupAtURL:backup restorePreferences:YES restoreSources:NO error:&e]);
