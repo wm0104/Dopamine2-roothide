@@ -42,7 +42,7 @@ static NSString *DONormalized(NSString *text) {
             NSTextCheckingResult *match = [rule firstMatchInString:line options:0 range:NSMakeRange(0,line.length)];
             if (!match) { if (error) *error = DOSE(@"Invalid one-line APT source. No files were changed."); return nil; }
             NSString *uri = [line substringWithRange:[match rangeAtIndex:1]];
-            if (!DOValidURI(uri)) { if (error) *error = DOSE(@"Only HTTP(S) APT source URLs are supported."); return nil; }
+            if (!DOValidURI(uri)) { if (error) *error = DOSE(@"Only HTTP and HTTPS APT source URLs are supported."); return nil; }
             if (!DOOldURI(uri)) [result addObject:line];
         }
     } else {
@@ -84,7 +84,7 @@ static NSString *DONormalized(NSString *text) {
             NSMutableArray *uris = [NSMutableArray array];
             BOOL changed = NO;
             for (NSString *uri in DOWords(fields[@"uris"])) {
-                if (!DOValidURI(uri)) { if (error) *error = DOSE(@"Only HTTP(S) APT source URLs are supported."); return nil; }
+                if (!DOValidURI(uri)) { if (error) *error = DOSE(@"Only HTTP and HTTPS APT source URLs are supported."); return nil; }
                 if (DOOldURI(uri)) changed = YES;
                 else [uris addObject:uri];
             }

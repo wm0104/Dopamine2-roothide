@@ -18,6 +18,20 @@ class BackupUIGuards(unittest.TestCase):
         self.assertIn("pushViewController:list animated:YES", SOURCE)
         self.assertNotIn("setNavigationControllerDelegate", SOURCE)
 
+    def test_added_copy_has_no_parenthetical_labels(self):
+        translations = re.findall(r'BT\(@"([^"\n]+)", @"([^"\n]*)", @"([^"\n]*)"\)', SOURCE)
+        for key, zh, en in translations:
+            self.assertNotRegex(zh, r'[()（）]', key)
+            self.assertNotRegex(en, r'[()（）]', key)
+        for key, zh, en in (
+            ("Backup_Share", "分享备份", "Share Backup"),
+            ("Backup_Respring", "现在注销", "Respring Now"),
+            ("Backup_LocalPath", "本地绝对路径", "Local Absolute Path"),
+        ):
+            self.assertIn((key, zh, en), translations)
+        self.assertIn("请妥善保管，不要公开分享。", SOURCE)
+        self.assertIn("请仅恢复可信的备份。继续？", SOURCE)
+
     def test_folder_selection_and_ios_bookmarks(self):
         self.assertIn("initForOpeningContentTypes:@[UTTypeFolder] asCopy:NO", SOURCE)
         self.assertIn("bookmarkDataWithOptions:0", SOURCE)

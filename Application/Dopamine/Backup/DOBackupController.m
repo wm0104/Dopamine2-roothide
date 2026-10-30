@@ -260,7 +260,7 @@ static dispatch_queue_t BackupUIQueue(void) {
         picker.allowsMultipleSelection = NO;
         [self presentViewController:picker animated:YES completion:nil];
     }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:BT(@"Backup_LocalPath", @"本地绝对路径（Filza）", @"Local Absolute Path (Filza)") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) { [self askLocalPath]; }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:BT(@"Backup_LocalPath", @"本地绝对路径", @"Local Absolute Path") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) { [self askLocalPath]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Cancel", @"取消", @"Cancel") style:UIAlertActionStyleCancel handler:nil]];
     [self anchorPopover:sheet];
     [self presentViewController:sheet animated:YES completion:nil];
@@ -276,7 +276,7 @@ static dispatch_queue_t BackupUIQueue(void) {
 }
 
 - (void)askLocalPath {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:BT(@"Backup_LocalPath", @"本地绝对路径（Filza）", @"Local Absolute Path (Filza)") message:BT(@"Backup_PathHint", @"填写已存在的持久目录，仅允许 /var/mobile/Documents 下的子目录。不要填写越狱根目录或系统目录。将验证读写权限。", @"Enter an existing persistent subfolder under /var/mobile/Documents. Do not use the jailbreak root or system folders. Read/write access will be verified.") preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:BT(@"Backup_LocalPath", @"本地绝对路径", @"Local Absolute Path") message:BT(@"Backup_PathHint", @"填写已存在的持久目录，仅允许 /var/mobile/Documents 下的子目录。不要填写越狱根目录或系统目录。将验证读写权限。", @"Enter an existing persistent subfolder under /var/mobile/Documents. Do not use the jailbreak root or system folders. Read/write access will be verified.") preferredStyle:UIAlertControllerStyleAlert];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
         field.placeholder = @"/var/mobile/Documents/MyBackups";
         field.autocapitalizationType = UITextAutocapitalizationTypeNone;
@@ -394,7 +394,7 @@ static dispatch_queue_t BackupUIQueue(void) {
         if (![self canPresent]) return;
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:BT(@"Backup_Created", @"备份已完成", @"Backup Complete") message:self.statusText preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Done", @"完成", @"Done") style:UIAlertActionStyleCancel handler:nil]];
-        [alert addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Share", @"分享备份（注意隐私）", @"Share Backup (Private Data)") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) { [self shareURL:result directory:directory]; }]];
+        [alert addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Share", @"分享备份", @"Share Backup") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) { [self shareURL:result directory:directory]; }]];
         [self presentViewController:alert animated:YES completion:nil];
     }];
 }
@@ -405,7 +405,7 @@ static dispatch_queue_t BackupUIQueue(void) {
     if (!url) return;
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:url.lastPathComponent message:url.URLByDeletingLastPathComponent.path preferredStyle:UIAlertControllerStyleActionSheet];
     [sheet addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Restore", @"恢复所选内容…", @"Restore Selected Contents…") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) { [self confirmRestore:url]; }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Share", @"分享备份（注意隐私）", @"Share Backup (Private Data)") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) { [self shareURL:url directory:self.restoreDirectory]; }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Share", @"分享备份", @"Share Backup") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) { [self shareURL:url directory:self.restoreDirectory]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Cancel", @"取消", @"Cancel") style:UIAlertActionStyleCancel handler:nil]];
     [self anchorPopover:sheet];
     [self presentViewController:sheet animated:YES completion:nil];
@@ -459,7 +459,7 @@ static dispatch_queue_t BackupUIQueue(void) {
     if (![self canPresent]) return;
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:BT(@"Backup_RestoreComplete", @"恢复完成", @"Restore Complete") message:self.statusText preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Done", @"完成", @"Done") style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Respring", @"现在注销（可选）", @"Respring Now (Optional)") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [alert addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Respring", @"现在注销", @"Respring Now") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         if (![self requireJailbreak]) return;
         [self performAtURL:nil work:^id(NSError **error) {
             [[DOEnvironmentManager sharedManager] respring];

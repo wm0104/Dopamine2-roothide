@@ -1,5 +1,5 @@
 export NIGHTLY ?= 0
-export CUSTOM_REVISION ?= 2
+export CUSTOM_REVISION ?= 3
 export BUILD_TIMESTAMP ?= $(shell date +%s)
 
 export BUILD_STANDALONE ?= 0
