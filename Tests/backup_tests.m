@@ -2,6 +2,9 @@
 #import "DOConfigurationBackupManager.h"
 #import <sys/stat.h>
 #import <unistd.h>
+@interface DOConfigurationBackupManager (ArchiveValidationTests)
+- (NSDictionary *)loadArchive:(NSURL *)url error:(NSError **)error;
+@end
 static unsigned checks;
 #define CHECK(x) do { checks++; if (!(x)) { fprintf(stderr,"FAIL %d: %s\n",__LINE__,#x); exit(1); } } while(0)
 static void Put(NSString *p, NSData *d) { CHECK([NSFileManager.defaultManager createDirectoryAtPath:p.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil]); CHECK([d writeToFile:p atomically:YES]); }
@@ -24,6 +27,8 @@ int main(void) { @autoreleasepool {
  if (!backup) NSLog(@"%@",e); CHECK(backup);
  CHECK([m.lastBackupReport[@"skippedCount"] unsignedIntegerValue]>=3);
  CHECK(![NSFileManager.defaultManager fileExistsAtPath:[backup.path stringByAppendingPathComponent:@"config/Preferences/com.apple.test.plist"]]);
+ NSDictionary *loaded = [m loadArchive:backup error:&e];
+ if (!loaded) NSLog(@"Archive validation: %@ (%@)", e, backup.path); CHECK(loaded);
  CHECK([m backupsInDirectory:[NSURL fileURLWithPath:store] error:&e].count==1);
  NSString *edited=[backup.path stringByAppendingPathComponent:@"config/Preferences/org.example.anytweak.plist"];
  Put(edited,Plist(@"manual-edit")); Put(a,Plist(@"current")); chmod(a.fileSystemRepresentation,0600);
