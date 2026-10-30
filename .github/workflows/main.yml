@@ -29,7 +29,7 @@ jobs:
           xcode-version: latest-stable
       - name: Install native tools
         run: |
-          brew install make ldid libarchive openssl pkg-config dpkg xz zstd ripgrep
+          brew install make ldid libarchive openssl@3 pkg-config dpkg xz zstd ripgrep
           echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
           echo "THEOS=$RUNNER_TEMP/roothide-theos" >> "$GITHUB_ENV"
           echo "BUILD_TIMESTAMP=$(date +%s)" >> "$GITHUB_ENV"
@@ -52,7 +52,7 @@ jobs:
         run: |
           git clone https://github.com/CRKatri/trustcache "$RUNNER_TEMP/trustcache"
           git -C "$RUNNER_TEMP/trustcache" checkout aa0e8847529cf76576fce8d2dbc9e088c8f1a0df
-          make -C "$RUNNER_TEMP/trustcache" -j4 OPENSSL=1 CFLAGS="-I$(brew --prefix openssl)/include" LDFLAGS="-L$(brew --prefix openssl)/lib"
+          make -C "$RUNNER_TEMP/trustcache" -j4 OPENSSL=1 CFLAGS="-DOPENSSL -I$(brew --prefix openssl@3)/include" LDFLAGS="-L$(brew --prefix openssl@3)/lib"
           echo "$RUNNER_TEMP/trustcache" >> "$GITHUB_PATH"
       - name: Test source migration on temporary fixtures
         run: |
