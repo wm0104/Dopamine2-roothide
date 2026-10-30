@@ -40,12 +40,22 @@ static BOOL BSecret(id object) {
     } else if ([object isKindOfClass:NSArray.class]) { for (id value in object) if (BSecret(value)) return YES; }
     return NO;
 }
-static BOOL BConfig(NSString *path, NSData *data, NSError **error) {
+static NSArray<NSString *> *BAdditionalConfigPaths(void) {
+    return @[@"ControlCenter/ModuleConfiguration_CCSupport.plist", @"CallAssistActivation/Activation.plist", @"Snapper3/license"];
+}
+static BOOL BConfigPath(NSString *path) {
+    if (!BPath(path)) return NO;
     NSArray *parts = path.pathComponents;
-    BOOL allowed = parts.count == 2 && (([parts[0] isEqual:@"Preferences"] && BPreferenceName(parts[1])) || ([parts[0] isEqual:@"RootHide"] && [BRootHideNames() containsObject:parts[1]]));
-    if (!allowed) return BFail(error, @"Configuration is not on the explicit allowlist");
+    return [BAdditionalConfigPaths() containsObject:path] || (parts.count == 2 && (([parts[0] isEqual:@"Preferences"] && BPreferenceName(parts[1])) || ([parts[0] isEqual:@"RootHide"] && [BRootHideNames() containsObject:parts[1]])));
+}
+static BOOL BConfig(NSString *path, NSData *data, NSError **error) {
+    if (!BConfigPath(path)) return BFail(error, @"Configuration is not on the explicit allowlist");
+    // Only these exact, user-authorized license paths may carry device/authorization data.
+    if ([path isEqual:@"Snapper3/license"])
+        return (data.length > 0 && data.length <= 64 * 1024) || BFail(error, @"Snapper3 license must contain 1 to 65536 bytes");
     id plist = [NSPropertyListSerialization propertyListWithData:data options:NSPropertyListImmutable format:NULL error:error];
-    return ([plist isKindOfClass:NSDictionary.class] && !BSecret(plist)) || BFail(error, @"Configuration must be a dictionary plist without credential/device keys");
+    BOOL authorized = [path isEqual:@"CallAssistActivation/Activation.plist"];
+    return ([plist isKindOfClass:NSDictionary.class] && (authorized || !BSecret(plist))) || BFail(error, @"Configuration must be a dictionary plist without credential/device keys except the explicitly authorized activation file");
 }
 static NSArray<NSString *> *BSourceUnits(NSString *text, BOOL deb822) {
     NSMutableArray *units = [NSMutableArray array];
@@ -221,22 +231,23 @@ static NSString *BArchiveName(BOOL safety, int base) {
     NSArray *rootHide = [self namesAt:lfd directory:@"RootHide" error:error];
     BOOL ok = preferences != nil && rootHide != nil;
     NSMutableArray *skipped = [NSMutableArray array];
-    for (NSString *kind in @[@"Preferences", @"RootHide"]) {
+    NSMutableArray *configPaths = [NSMutableArray arrayWithArray:BAdditionalConfigPaths()];
+    for (NSString *name in preferences) {
+        NSString *path = [@"Preferences" stringByAppendingPathComponent:name];
+        if (BPreferenceName(name)) [configPaths addObject:path];
+        else [skipped addObject:@{@"path":path, @"reason":@"excluded-system-control-credential-or-unsupported-name"}];
+    }
+    for (NSString *name in BRootHideNames()) [configPaths addObject:[@"RootHide" stringByAppendingPathComponent:name]];
+    for (NSString *path in configPaths) {
         if (!ok) break;
-        for (NSString *name in [kind isEqual:@"Preferences"] ? preferences : BRootHideNames()) {
-            NSString *path = [kind stringByAppendingPathComponent:name];
-            if ([kind isEqual:@"Preferences"] && !BPreferenceName(name)) {
-                [skipped addObject:@{@"path":path, @"reason":@"excluded-system-control-credential-or-unsupported-name"}]; continue;
-            }
-            BOOL missing; NSError *readError = nil;
-            NSData *data = BRead(lfd, path, NULL, &missing, &readError);
-            if (missing) continue;
-            NSError *configError = nil;
-            if (!data || !BConfig(path, data, &configError)) {
-                [skipped addObject:@{@"path":path, @"reason":data ? @"non-dictionary-malformed-or-sensitive-content" : @"unsafe-link-unreadable-special-or-oversized"}]; continue;
-            }
-            result[[@"config" stringByAppendingPathComponent:path]] = data;
+        BOOL missing; NSError *readError = nil;
+        NSData *data = BRead(lfd, path, NULL, &missing, &readError);
+        if (missing) continue;
+        NSError *configError = nil;
+        if (!data || !BConfig(path, data, &configError)) {
+            [skipped addObject:@{@"path":path, @"reason":data ? @"invalid-format-size-or-sensitive-content" : @"unsafe-link-unreadable-special-or-oversized"}]; continue;
         }
+        result[[@"config" stringByAppendingPathComponent:path]] = data;
     }
     NSMutableArray *sourcePaths = [NSMutableArray arrayWithObject:@"sources.list"];
     NSString *listDir = [apt stringByAppendingPathComponent:@"sources.list.d"];
@@ -333,8 +344,7 @@ static NSString *BArchiveName(BOOL safety, int base) {
             [seen addObject:file]; mapped = file;
         } else if ([file hasPrefix:@"插件配置备份/Library/"]) {
             NSString *config = [file substringFromIndex:[@"插件配置备份/Library/" length]];
-            NSArray *p = config.pathComponents;
-            if (p.count == 2 && (([p[0] isEqual:@"Preferences"] && BPreferenceName(p[1])) || ([p[0] isEqual:@"RootHide"] && [BRootHideNames() containsObject:p[1]]))) mapped = [@"config" stringByAppendingPathComponent:config];
+            if (BConfigPath(config)) mapped = [@"config" stringByAppendingPathComponent:config];
             // Legacy scripts copied whole Library: unallowlisted data is never restored.
         } else if ([file hasPrefix:@"源地址备份/"] && ( [file.pathExtension isEqual:@"list"] || [file.pathExtension isEqual:@"sources"])) {
             mapped = [@"sources/sources.list.d" stringByAppendingPathComponent:file.lastPathComponent];

@@ -1,3 +1,4 @@
+#import <sys/xattr.h>
 // Synthetic data only. Never access device roots or real authorization material.
 static void ExtendedBackupTests(void) {
  NSString *temp=[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
@@ -27,6 +28,7 @@ static void ExtendedBackupTests(void) {
  for (NSUInteger i=0;i<paths.count;i++) {
   NSString *p=[library stringByAppendingPathComponent:paths[i]]; Put(p,i==2?Text(@"changed-binary"):Plist(@"changed"));
   CHECK(chmod(p.fileSystemRepresentation,0600+i*4)==0); CHECK(stat(p.fileSystemRepresentation,&before[i])==0);
+  CHECK(setxattr(p.fileSystemRepresentation,"org.dopamine.synthetic",bytes,1,0,0)==0);
  }
  CHECK([m restoreBackupAtURL:backup restorePreferences:NO restoreSources:YES error:&e]);
  CHECK([[NSData dataWithContentsOfFile:[library stringByAppendingPathComponent:paths[2]]] isEqual:Text(@"changed-binary")]);
@@ -36,29 +38,29 @@ static void ExtendedBackupTests(void) {
   CHECK([[NSData dataWithContentsOfFile:p] isEqual:values[i]]); CHECK(stat(p.fileSystemRepresentation,&after)==0);
   CHECK((after.st_mode&0777)==(before[i].st_mode&0777) && after.st_uid==before[i].st_uid && after.st_gid==before[i].st_gid);
   CHECK(after.st_mtimespec.tv_sec==before[i].st_mtimespec.tv_sec && after.st_mtimespec.tv_nsec==before[i].st_mtimespec.tv_nsec);
+  unsigned char attribute=255; CHECK(getxattr(p.fileSystemRepresentation,"org.dopamine.synthetic",&attribute,1,0,0)==1 && attribute==bytes[0]);
  }
- // Safety snapshots include the authorization files; failure after all three writes rolls back all.
- for (NSUInteger i=0;i<paths.count;i++) Put([library stringByAppendingPathComponent:paths[i]],i==2?Text(@"before-failure"):Plist(@"before-failure"));
- Put([library stringByAppendingPathComponent:@"Preferences/org.example.last.plist"],Plist(@"last"));
- // Sorted paths: CallAssistActivation, ControlCenter, Preferences, Snapper3, RootHide sorts before Snapper3.
- Put([library stringByAppendingPathComponent:@"RootHide/RootHideConfig.plist"],Plist(@"last-root"));
- // A fourth config after Snapper3 ensures failure is injected after the new files were written.
- NSURL *rollbackBackup=[m createBackupInDirectory:folder error:&e]; CHECK(rollbackBackup);
- for (NSUInteger i=0;i<paths.count;i++) Put([library stringByAppendingPathComponent:paths[i]],values[i]);
- m.failAfterWrites=3;
- CHECK(![m restoreBackupAtURL:rollbackBackup restorePreferences:YES restoreSources:NO error:&e]);
- for (NSUInteger i=0;i<paths.count;i++) CHECK([[NSData dataWithContentsOfFile:[library stringByAppendingPathComponent:paths[i]]] isEqual:values[i]]);
- m.failAfterWrites=-1;
- // Use a plan containing only the new paths and a source sorted last to force rollback after Snapper3.
+ // A source sorted after the three new config paths forces failure after all three writes.
  NSString *legacy=[store stringByAppendingPathComponent:@"legacy-extended"];
  for (NSUInteger i=0;i<paths.count;i++) Put([[legacy stringByAppendingPathComponent:@"插件配置备份/Library"] stringByAppendingPathComponent:paths[i]],values[i]);
  for (NSString *p in excluded) Put([[legacy stringByAppendingPathComponent:@"插件配置备份/Library"] stringByAppendingPathComponent:p],activation);
  Put([legacy stringByAppendingPathComponent:@"源地址备份/new.list"],Text(@"deb https://other-fixture.example/ ./\n"));
  NSURL *legacyURL=[NSURL fileURLWithPath:legacy];
  CHECK([m loadArchive:legacyURL error:&e].count==4);
- for (NSUInteger i=0;i<paths.count;i++) Put([library stringByAppendingPathComponent:paths[i]],i==2?Text(@"rollback-binary"):Plist(@"rollback-plist"));
+ for (NSUInteger i=0;i<paths.count;i++) {
+  NSString *p=[library stringByAppendingPathComponent:paths[i]]; Put(p,i==2?Text(@"rollback-binary"):Plist(@"rollback-plist"));
+  CHECK(chmod(p.fileSystemRepresentation,0600)==0); CHECK(stat(p.fileSystemRepresentation,&before[i])==0);
+  CHECK(setxattr(p.fileSystemRepresentation,"org.dopamine.synthetic",bytes,1,0,0)==0);
+ }
  m.failAfterWrites=3; CHECK(![m restoreBackupAtURL:legacyURL restorePreferences:YES restoreSources:YES error:&e]);
- for (NSUInteger i=0;i<paths.count;i++) CHECK([[NSData dataWithContentsOfFile:[library stringByAppendingPathComponent:paths[i]]] isEqual:(i==2?Text(@"rollback-binary"):Plist(@"rollback-plist"))]);
+ for (NSUInteger i=0;i<paths.count;i++) {
+  NSString *p=[library stringByAppendingPathComponent:paths[i]]; struct stat after;
+  CHECK([[NSData dataWithContentsOfFile:p] isEqual:(i==2?Text(@"rollback-binary"):Plist(@"rollback-plist"))]);
+  CHECK(stat(p.fileSystemRepresentation,&after)==0);
+  CHECK((after.st_mode&0777)==(before[i].st_mode&0777) && after.st_uid==before[i].st_uid && after.st_gid==before[i].st_gid);
+  CHECK(after.st_mtimespec.tv_sec==before[i].st_mtimespec.tv_sec && after.st_mtimespec.tv_nsec==before[i].st_mtimespec.tv_nsec);
+  unsigned char attribute=255; CHECK(getxattr(p.fileSystemRepresentation,"org.dopamine.synthetic",&attribute,1,0,0)==1 && attribute==bytes[0]);
+ }
  NSArray *archives=[m backupsInDirectory:folder error:&e]; BOOL safetyFound=NO;
  for (NSURL *url in archives) if ([url.lastPathComponent hasPrefix:@"恢复前备份_"]) {
   NSDictionary *safety=[m loadArchive:url error:&e];
@@ -110,6 +112,12 @@ static void ExtendedBackupTests(void) {
  CHECK(symlink([backup.path stringByAppendingPathComponent:@"config/Snapper3"].fileSystemRepresentation,snapper.fileSystemRepresentation)==0);
  CHECK(![m restoreBackupAtURL:backup restorePreferences:YES restoreSources:NO error:&e]);
  CHECK([NSFileManager.defaultManager removeItemAtPath:snapper error:nil]); Put([library stringByAppendingPathComponent:paths[2]],binary);
+ // Dictionary validation applies to both plist paths, not just well-formed plist syntax.
+ NSData *arrayPlist=[NSPropertyListSerialization dataWithPropertyList:@[@"synthetic"] format:NSPropertyListBinaryFormat_v1_0 options:0 error:nil];
+ for (NSUInteger i=0;i<2;i++) {
+  NSString *archived=[[backup.path stringByAppendingPathComponent:@"config"] stringByAppendingPathComponent:paths[i]];
+  Put(archived,arrayPlist); CHECK(![m loadArchive:backup error:&e]); Put(archived,values[i]);
+ }
  // Exact license exception only: layout retains secret detection, activation requires a dictionary.
  NSArray *invalid=@[activation,Text(@"not-a-plist"),[NSMutableData dataWithLength:65537]];
  for (NSUInteger i=0;i<paths.count;i++) {

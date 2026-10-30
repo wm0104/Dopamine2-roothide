@@ -112,7 +112,7 @@ static dispatch_queue_t BackupUIQueue(void) {
 - (NSArray *)specifiers {
     if (_specifiers) return _specifiers;
     NSMutableArray *items = [NSMutableArray array];
-    NSString *privacy = BT(@"Backup_Privacy", @"仅备份配置，不安装或恢复插件。配置可能包含账户、令牌等私人信息，请妥善保管，不要公开分享。", @"Configuration only: this does not install or restore tweaks. Configuration may contain accounts, tokens and other private data. Keep backups private.");
+    NSString *privacy = BT(@"Backup_Privacy", @"仅备份配置，不安装或恢复插件。包含控制中心布局及 CallAssist、Snapper3 授权文件，授权可能绑定设备，不能保证跨设备使用。配置可能包含账户、令牌等私人信息，请妥善保管，不要公开分享。", @"Configuration only: this does not install or restore tweaks. Includes Control Center layout and CallAssist and Snapper3 licenses. Licenses may be device-specific; portability is not guaranteed. Configuration may contain accounts, tokens and other private data. Keep backups private.");
     NSString *location = self.storageDirectory.path;
     [items addObject:[self group:self.title ?: BT(@"Backup_Title", @"配置备份与恢复", @"Configuration Backup & Restore") footer:privacy]];
     [items addObject:[self group:BT(@"Backup_Location", @"备份位置", @"Backup Folder") footer:location ?: BT(@"Backup_NoFolder", @"首次备份时选择保存目录，之后自动记住。", @"Choose a folder for the first backup; it will be remembered.")]];
@@ -129,7 +129,7 @@ static dispatch_queue_t BackupUIQueue(void) {
     }
     [items addObject:[self group:BT(@"Backup_RestoreScope", @"恢复内容", @"Restore Contents") footer:BT(@"Backup_ScopeHint", @"只恢复勾选的内容，覆盖对应配置。关闭的项目保持不变。操作仅在已越狱环境中可用，不会自动执行或自动注销。", @"Selected contents overwrite matching configuration; unselected contents stay unchanged. Requires an active jailbreak. Nothing runs or resprings automatically.")]];
     for (NSString *key in @[@"preferences", @"sources"]) {
-        NSString *title = [key isEqualToString:@"preferences"] ? BT(@"Backup_Preferences", @"偏好设置", @"Preferences") : BT(@"Backup_Sources", @"软件源", @"Package Sources");
+        NSString *title = [key isEqualToString:@"preferences"] ? BT(@"Backup_Preferences", @"配置文件", @"Configuration Files") : BT(@"Backup_Sources", @"软件源", @"Package Sources");
         PSSpecifier *toggle = [PSSpecifier preferenceSpecifierNamed:title target:self set:@selector(setScope:specifier:) get:@selector(scopeValue:) detail:nil cell:PSSwitchCell edit:nil];
         [toggle setProperty:key forKey:@"key"];
         [items addObject:toggle];
@@ -453,7 +453,7 @@ static dispatch_queue_t BackupUIQueue(void) {
     BOOL preferences = self.preferences, sources = self.sources;
     NSMutableArray *scope = [NSMutableArray array];
     if (!preferences && !sources) [scope addObject:BT(@"Backup_ChooseScope", @"至少选择一项恢复内容。", @"Select at least one restore category.")];
-    if (preferences) [scope addObject:BT(@"Backup_Preferences", @"偏好设置", @"Preferences")];
+    if (preferences) [scope addObject:BT(@"Backup_Preferences", @"配置文件", @"Configuration Files")];
     if (sources) [scope addObject:BT(@"Backup_Sources", @"软件源", @"Package Sources")];
     NSString *message = [NSString stringWithFormat:@"%@\n%@\n\n%@\n%@", url.lastPathComponent, url.URLByDeletingLastPathComponent.path, [scope componentsJoinedByString:@", "], BT(@"Backup_OverwriteWarning", @"将覆盖上述现有配置，其余内容不变。不安装插件。请仅恢复可信的备份。继续？", @"This overwrites the existing configuration listed above; other contents stay unchanged. No tweaks are installed. Restore only trusted backups. Continue?")];
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:BT(@"Backup_ConfirmRestore", @"确认恢复", @"Confirm Restore") message:message preferredStyle:UIAlertControllerStyleAlert];

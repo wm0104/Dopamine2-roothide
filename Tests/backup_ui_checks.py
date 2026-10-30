@@ -118,6 +118,12 @@ class BackupUIGuards(unittest.TestCase):
         respring = SOURCE.split("- (void)offerRespring", 1)[1]
         self.assertLess(respring.index("handler:"), respring.index("] respring]"))
 
+    def test_expanded_configuration_scope(self):
+        self.assertIn('BT(@"Backup_Preferences", @"配置文件", @"Configuration Files")', SOURCE)
+        for text in ('控制中心布局', 'CallAssist', 'Snapper3', '授权可能绑定设备', '不能保证跨设备使用'):
+            self.assertIn(text, SOURCE)
+        self.assertNotIn('@"偏好设置"', SOURCE)
+
     def test_local_path_and_bilingual_keys(self):
         self.assertIn("realpath(url.fileSystemRepresentation", SOURCE)
         self.assertIn('@"/private/var/mobile/Documents/"', SOURCE)
