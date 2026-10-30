@@ -114,7 +114,12 @@ static NSArray<NSString *> *BSourceUnits(NSString *text, BOOL deb822) {
 - (BOOL)validateStorageDirectory:(NSURL *)directory error:(NSError **)error {
     if (!directory.isFileURL || directory.query || directory.fragment) return BFail(error, @"Choose a local Files folder");
     NSString *original = directory.path;
-    if (![original isEqual:original.stringByStandardizingPath]) return BFail(error, @"Non-canonical folder path rejected");
+    NSString *standard = original.stringByStandardizingPath;
+    // Foundation may shorten /private/var to /var on macOS when enumerating URLs.
+    // Accept only these system aliases; realpath equality below still rejects links.
+    BOOL systemAlias = (BUnder(standard, @"/var") || BUnder(standard, @"/tmp")) &&
+        [original isEqual:[@"/private" stringByAppendingString:standard]];
+    if (![original isEqual:standard] && !systemAlias) return BFail(error, @"Non-canonical folder path rejected");
     NSString *path = original;
     if (BUnder(path, @"/var")) path = [@"/private" stringByAppendingString:path];
     if (BUnder(path, @"/tmp")) path = [@"/private" stringByAppendingString:path];
