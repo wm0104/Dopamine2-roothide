@@ -1,4 +1,5 @@
 name: Build custom RootHide IPA
+run-name: ${{ github.event.head_commit.message || '构建配置备份更新' }}
 
 on:
   push:

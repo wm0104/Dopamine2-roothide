@@ -10,7 +10,9 @@ static unsigned checks;
 static void Put(NSString *p, NSData *d) { CHECK([NSFileManager.defaultManager createDirectoryAtPath:p.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil]); CHECK([d writeToFile:p atomically:YES]); }
 static NSData *Plist(NSString *v) { return [NSPropertyListSerialization dataWithPropertyList:@{@"value":v} format:NSPropertyListXMLFormat_v1_0 options:0 error:nil]; }
 static NSData *Text(NSString *s) { return [s dataUsingEncoding:NSUTF8StringEncoding]; }
+#include "backup_extension_tests.inc"
 int main(void) { @autoreleasepool {
+ ExtendedBackupTests();
  NSString *temp=[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
  NSString *root=[temp stringByAppendingPathComponent:@"root"], *store=[temp stringByAppendingPathComponent:@"storage"];
  NSString *prefs=[root stringByAppendingPathComponent:@"var/mobile/Library/Preferences"];
