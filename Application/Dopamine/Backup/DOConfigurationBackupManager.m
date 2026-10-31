@@ -696,8 +696,9 @@ static BOOL BRemoveVerifiedTree(int parent, NSString *name, NSError **error) {
     // Verify every target before the first deletion so nothing is removed half way.
     for (NSURL *url in targets) {
         BOOL isSafety = NO; NSMutableArray *entries = [NSMutableArray array]; NSUInteger bytes = 0;
+        // Resolve only the fixed system aliases (/var -> /private/var); no archive path is followed.
         if (!BGeneratedName(url.lastPathComponent, &isSafety) || ![self archiveIsOurs:url.lastPathComponent base:base] ||
-            ![self walk:url.path prefix:@"" files:entries bytes:&bytes error:error]) {
+            ![self walk:BCanonical(url.path) prefix:@"" files:entries bytes:&bytes error:error]) {
             if (error && !*error) BFail(error, @"A backup folder is not safe to delete");
             ok = NO; break;
         }
