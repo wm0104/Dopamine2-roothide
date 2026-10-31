@@ -124,7 +124,56 @@ class BackupUIGuards(unittest.TestCase):
             self.assertIn(text, SOURCE)
         self.assertNotIn('@"偏好设置"', SOURCE)
 
-    def test_local_path_and_bilingual_keys(self):
+    def test_retention_only_after_publish_and_confirmed_once(self):
+        create = SOURCE.split("- (void)createPressed:", 1)[1].split("- (void)backupPressed:", 1)[0]
+        self.assertLess(create.index("createBackupInDirectory:directory error:error"), create.index("retentionPlanInDirectory:directory"))
+        self.assertIn("applyRetentionInDirectory:directory confirmed:NO", create)
+        self.assertIn("needsConfirmation", create)
+        self.assertEqual(SOURCE.count("[self confirmRetention:value"), 1)
+        apply = SOURCE.split("- (void)deleteRetainedBackups:", 1)[1].split("- (void)presentBackupComplete:", 1)[0]
+        self.assertIn("applyRetentionInDirectory:directory confirmed:YES", apply)
+        self.assertIn("此确认只出现一次", SOURCE)
+        self.assertIn("只删除本应用创建的备份文件夹", SOURCE)
+        restore = SOURCE.split("restoreBackupAtURL:url restorePreferences:", 1)[1]
+        self.assertIn("retentionPlanInDirectory:self.restoreDirectory", restore)
+
+    def test_backup_message_reports_not_included(self):
+        complete = SOURCE.split("- (void)presentBackupComplete:", 1)[1].split("- (void)backupPressed:", 1)[0]
+        self.assertIn('BT(@"Backup_NotIncluded", @"未纳入", @"Not included")', complete)
+        self.assertIn('snapshot[@"skippedCount"]', complete)
+        self.assertIn('BT(@"Backup_Included"', complete)
+
+    def test_rows_show_time_files_and_size(self):
+        specifiers = SOURCE.split("- (NSArray *)specifiers", 1)[1].split("- (id)scopeValue:", 1)[0]
+        self.assertIn("[self summaryTitle:summary]", specifiers)
+        self.assertNotIn("preferenceSpecifierNamed:url.lastPathComponent", specifiers)
+        title = SOURCE.split("- (NSString *)summaryTitle:", 1)[1].split("- (id)scopeValue:", 1)[0]
+        for token in ('BTimeText(summary[@"created"])', 'BT(@"Backup_RowFiles"', 'BSizeText(bytes.unsignedLongLongValue)'):
+            self.assertIn(token, title)
+        self.assertIn(" · ", title)
+
+    def test_new_ui_reuses_original_cells_and_appearance(self):
+        # No custom cells, colors, fonts or layout: reuse the stock classes only.
+        for token in ("UIColor", "UIFont", "UILabel", "UITableViewCell", "UIStackView", "cornerRadius", "backgroundColor"):
+            self.assertNotIn(token, SOURCE)
+        self.assertEqual(SOURCE.count('forKey:@"cellClass"'), 1)
+        self.assertIn('setProperty:DOButtonCell.class forKey:@"cellClass"', SOURCE)
+        self.assertIn('NSStringFromClass(DOHeaderCell.class) forKey:@"headerCellClass"', SOURCE)
+        rows = SOURCE.split("if (self.restoreDirectory) {", 1)[1].split('[items addObject:[self group:BT(@"Backup_RestoreScope"', 1)[0]
+        self.assertIn("cell:PSButtonCell", rows)
+        for token in ("height", "image", "cellClass"):
+            self.assertNotIn(token, rows)
+        self.assertIn('forKey:@"backupURL"', rows)
+
+    def test_restore_preview_shows_counts_not_contents(self):
+        segment = SOURCE.split("- (void)presentRestoreConfirmation:", 1)[1].split("- (void)shareURL:", 1)[0]
+        for key in ("Backup_Time", "Backup_FileCount", "Backup_Size", "Backup_NotIncluded"):
+            self.assertIn(key, segment)
+        self.assertIn("summaryForBackupAtURL:url error:error", SOURCE)
+        self.assertNotIn("for (NSString *path in", segment)
+        self.assertIn("url.lastPathComponent", segment)  # only the backup itself is named
+
+
         self.assertIn("realpath(url.fileSystemRepresentation", SOURCE)
         self.assertIn('@"/private/var/mobile/Documents/"', SOURCE)
         self.assertIn("validateStorageDirectory:directory", SOURCE)

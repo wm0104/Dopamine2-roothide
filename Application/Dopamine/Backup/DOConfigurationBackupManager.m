@@ -92,6 +92,55 @@ static NSString *BArchiveName(BOOL safety, int base) {
     return nil;
 }
 
+// Retention keeps the newest two manual backups and the newest safety backup.
+// Only directories this build created (exact generated name AND our manifest)
+// are ever removed; everything else in the folder is left untouched.
+static NSString *const BRetentionMarker = @".dopamine-retention.v1";
+static const NSUInteger BRetentionManualKeep = 2;
+static const NSUInteger BRetentionSafetyKeep = 1;
+static BOOL BGeneratedName(NSString *name, BOOL *safety) {
+    if (![name isKindOfClass:NSString.class] || !name.length || name.pathComponents.count != 1) return NO;
+    BOOL manual = [name hasPrefix:@"配置备份_"], safe = [name hasPrefix:@"恢复前备份_"];
+    if (!manual && !safe) return NO;
+    static NSRegularExpression *rule;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        rule = [NSRegularExpression regularExpressionWithPattern:@"^(配置备份|恢复前备份)_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}(-[0-9]{1,3})?$" options:0 error:nil];
+    });
+    if ([rule numberOfMatchesInString:name options:0 range:NSMakeRange(0, name.length)] != 1) return NO;
+    if (safety) *safety = safe;
+    return YES;
+}
+static BOOL BWriteRetentionMarker(int base, NSError **error) {
+    int fd = openat(base, BRetentionMarker.fileSystemRepresentation, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) return errno == EEXIST || BFail(error, @"Cannot record the one-time cleanup confirmation");
+    BOOL ok = write(fd, "1\n", 2) == 2 && !fsync(fd);
+    close(fd);
+    return ok || BFail(error, @"Cannot record the one-time cleanup confirmation");
+}
+// Removes an already verified archive. Links and special files are never followed.
+static BOOL BRemoveVerifiedTree(int parent, NSString *name, NSError **error) {
+    if (!BPath(name)) return BFail(error, @"Unsafe old backup name");
+    int fd = openat(parent, name.fileSystemRepresentation, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) return BFail(error, @"Cannot open the old backup folder safely");
+    DIR *stream = fdopendir(fd);
+    if (!stream) { close(fd); return BFail(error, @"Cannot enumerate the old backup folder"); }
+    BOOL ok = YES; struct dirent *entry; NSMutableArray *directories = [NSMutableArray array];
+    while (ok && (entry = readdir(stream))) {
+        NSString *child = [NSString stringWithUTF8String:entry->d_name];
+        if (!child || [child isEqual:@"."] || [child isEqual:@".."]) continue;
+        struct stat st;
+        if (!BPath(child) || fstatat(fd, entry->d_name, &st, AT_SYMLINK_NOFOLLOW)) { ok = BFail(error, @"Invalid old backup entry"); break; }
+        if (S_ISDIR(st.st_mode)) [directories addObject:child];
+        else if (S_ISREG(st.st_mode) && st.st_nlink == 1) { if (unlinkat(fd, entry->d_name, 0)) ok = BFail(error, @"Cannot remove an old backup file"); }
+        else ok = BFail(error, @"Links and special files are never deleted");
+    }
+    for (NSString *child in directories) { if (!ok) break; ok = BRemoveVerifiedTree(fd, child, error); }
+    closedir(stream);
+    if (ok) ok = !unlinkat(parent, name.fileSystemRepresentation, AT_REMOVEDIR) || BFail(error, @"Cannot remove the old backup folder");
+    return ok;
+}
+
 @interface DOConfigurationBackupManager ()
 @property(nonatomic, copy) NSString *testRoot;
 @property(nonatomic, copy, readwrite) NSDictionary<NSString *, id> *lastBackupReport;
@@ -528,6 +577,53 @@ static NSString *BArchiveName(BOOL safety, int base) {
     }
 }
 - (NSArray<NSURL *> *)backupsInDirectory:(NSURL *)directory error:(NSError **)error {
+    NSArray<NSDictionary<NSString *, id> *> *rows = [self backupSummariesInDirectory:directory error:error];
+    return [rows valueForKey:@"url"] ?: @[];
+}
+- (BOOL)archiveIsOurs:(NSString *)name base:(int)base {
+    int fd = openat(base, name.fileSystemRepresentation, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) return NO;
+    BOOL absent = NO;
+    NSData *data = BRead(fd, @"manifest.json", NULL, &absent, NULL);
+    close(fd);
+    if (!data) return NO;
+    id object = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    return [object isKindOfClass:NSDictionary.class] && [object[@"format"] isEqual:@"org.roothide.configuration-backup"] &&
+        [object[@"version"] isEqual:@1] && [object[@"files"] isKindOfClass:NSArray.class];
+}
+- (NSDictionary<NSString *, id> *)summaryForBackupAtURL:(NSURL *)url error:(NSError **)error {
+    [BLock lock]; @try {
+        if (!url.isFileURL) { BFail(error, @"Backup must be a local folder"); return nil; }
+        NSDictionary *archive = [self loadArchive:url error:error];
+        if (!archive) return nil;
+        NSUInteger size = 0;
+        for (NSData *data in archive.allValues) size += data.length;
+        // Only regular files are counted; walk rejects links and special files.
+        NSMutableArray *entries = [NSMutableArray array]; NSUInteger walked = 0;
+        if (![self walk:BCanonical(url.path) prefix:@"" files:entries bytes:&walked error:error]) return nil;
+        NSUInteger regular = 0;
+        for (NSDictionary *entry in entries) if (entry[@"file"]) regular++;
+        NSDictionary *manifest = nil;
+        int fd = BOpenDirectory(BCanonical(url.path));
+        if (fd >= 0) {
+            BOOL absent = NO;
+            NSData *data = BRead(fd, @"manifest.json", NULL, &absent, NULL);
+            close(fd);
+            if (data) {
+                id object = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+                if ([object isKindOfClass:NSDictionary.class]) manifest = object;
+            }
+        }
+        NSDate *created = nil;
+        if ([manifest[@"created"] isKindOfClass:NSNumber.class]) created = [NSDate dateWithTimeIntervalSince1970:[manifest[@"created"] doubleValue]];
+        if (!created) created = [[NSFileManager defaultManager] attributesOfItemAtPath:url.path error:nil][NSFileModificationDate];
+        NSNumber *reported = [manifest[@"report"] isKindOfClass:NSDictionary.class] ? manifest[@"report"][@"skippedCount"] : nil;
+        NSUInteger skipped = [reported isKindOfClass:NSNumber.class] ? reported.unsignedIntegerValue : (regular > archive.count ? regular - archive.count : 0);
+        return @{@"url":url, @"files":@(archive.count), @"size":@(size), @"created":created ?: [NSDate dateWithTimeIntervalSince1970:0],
+                 @"skipped":@(skipped), @"safety":@([url.lastPathComponent hasPrefix:@"恢复前备份_"]), @"legacy":@(manifest == nil)};
+    } @finally { [BLock unlock]; }
+}
+- (NSArray<NSDictionary<NSString *, id> *> *)backupSummariesInDirectory:(NSURL *)directory error:(NSError **)error {
     [BLock lock]; @try {
         __block NSMutableArray *results = [NSMutableArray array];
         BOOL ok = [self coordinate:directory writing:NO block:^BOOL(NSURL *actual, NSError **e) {
@@ -539,15 +635,102 @@ static NSString *BArchiveName(BOOL safety, int base) {
                 struct stat st;
                 if (lstat(child.path.fileSystemRepresentation, &st) || !S_ISDIR(st.st_mode)) continue;
                 NSError *archiveError = nil;
-                if ([self loadArchive:child error:&archiveError]) [results addObject:child];
+                NSDictionary *summary = [self summaryForBackupAtURL:child error:&archiveError];
+                if (summary) [results addObject:summary];
 #ifdef DO_BACKUP_TESTING
                 else NSLog(@"Skipped backup %@: %@", child, archiveError);
 #endif
             }
-            [results sortUsingComparator:^NSComparisonResult(NSURL *a, NSURL *b) { return [a.lastPathComponent compare:b.lastPathComponent options:NSNumericSearch]; }];
+            [results sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+                return [((NSURL *)a[@"url"]).lastPathComponent compare:((NSURL *)b[@"url"]).lastPathComponent options:NSNumericSearch];
+            }];
             return YES;
         } error:error];
         return ok ? results : @[];
+    } @finally { [BLock unlock]; }
+}
+- (NSDictionary<NSString *, id> *)retentionPlanUncoordinated:(NSURL *)directory error:(NSError **)error {
+    if (![self validateStorageDirectory:directory error:error]) return nil;
+    int base = BOpenDirectory(BCanonical(directory.path));
+    if (base < 0) { BFail(error, @"Storage folder became unavailable"); return nil; }
+    int listFD = dup(base);
+    DIR *stream = listFD >= 0 ? fdopendir(listFD) : NULL;
+    if (!stream) { if (listFD >= 0) close(listFD); close(base); BFail(error, @"Cannot enumerate the storage folder"); return nil; }
+    NSMutableArray *manual = [NSMutableArray array], *safety = [NSMutableArray array];
+    BOOL ok = YES; struct dirent *entry;
+    while ((entry = readdir(stream))) {
+        NSString *name = [NSString stringWithUTF8String:entry->d_name];
+        if (!name || [name isEqual:@"."] || [name isEqual:@".."]) continue;
+        BOOL isSafety = NO;
+        if (!BGeneratedName(name, &isSafety)) continue;
+        struct stat st;
+        if (fstatat(base, entry->d_name, &st, AT_SYMLINK_NOFOLLOW)) { ok = BFail(error, @"Cannot inspect a backup folder"); break; }
+        // Symlinks, files and folders that are not ours are never candidates.
+        if (!S_ISDIR(st.st_mode) || ![self archiveIsOurs:name base:base]) continue;
+        [(isSafety ? safety : manual) addObject:name];
+    }
+    struct stat marker = {0};
+    BOOL marked = fstatat(base, BRetentionMarker.fileSystemRepresentation, &marker, AT_SYMLINK_NOFOLLOW) == 0 && S_ISREG(marker.st_mode);
+    closedir(stream); close(base);
+    if (!ok) return nil;
+    NSComparator byName = ^NSComparisonResult(NSString *a, NSString *b) { return [a compare:b options:NSNumericSearch]; };
+    [manual sortUsingComparator:byName]; [safety sortUsingComparator:byName];
+    NSUInteger manualDrop = manual.count > BRetentionManualKeep ? manual.count - BRetentionManualKeep : 0;
+    NSUInteger safetyDrop = safety.count > BRetentionSafetyKeep ? safety.count - BRetentionSafetyKeep : 0;
+    NSMutableArray *candidates = [NSMutableArray array], *kept = [NSMutableArray array];
+    for (NSUInteger i = 0; i < manual.count; i++) [(i < manualDrop ? candidates : kept) addObject:manual[i]];
+    for (NSUInteger i = 0; i < safety.count; i++) [(i < safetyDrop ? candidates : kept) addObject:safety[i]];
+    NSMutableArray *urls = [NSMutableArray array];
+    for (NSString *name in candidates) [urls addObject:[directory URLByAppendingPathComponent:name isDirectory:YES]];
+    return @{@"candidates":urls, @"count":@(urls.count), @"kept":@(kept.count), @"manualKept":@(manual.count - manualDrop),
+             @"safetyKept":@(safety.count - safetyDrop), @"needsConfirmation":@(urls.count > 0 && !marked), @"marked":@(marked)};
+}
+- (NSArray<NSURL *> *)retentionApplyUncoordinated:(NSURL *)directory confirmed:(BOOL)confirmed error:(NSError **)error {
+    NSDictionary *plan = [self retentionPlanUncoordinated:directory error:error];
+    if (!plan) return nil;
+    if ([plan[@"needsConfirmation"] boolValue] && !confirmed) { BFail(error, @"The first old backup cleanup needs one confirmation"); return nil; }
+    NSArray<NSURL *> *targets = plan[@"candidates"];
+    int base = BOpenDirectory(BCanonical(directory.path));
+    if (base < 0) { BFail(error, @"Storage folder became unavailable"); return nil; }
+    BOOL ok = YES;
+    // Verify every target before the first deletion so nothing is removed half way.
+    for (NSURL *url in targets) {
+        BOOL isSafety = NO; NSMutableArray *entries = [NSMutableArray array]; NSUInteger bytes = 0;
+        if (!BGeneratedName(url.lastPathComponent, &isSafety) || ![self archiveIsOurs:url.lastPathComponent base:base] ||
+            ![self walk:url.path prefix:@"" files:entries bytes:&bytes error:error]) {
+            if (error && !*error) BFail(error, @"A backup folder is not safe to delete");
+            ok = NO; break;
+        }
+    }
+    NSMutableArray *deleted = [NSMutableArray array];
+    for (NSURL *url in targets) {
+        if (!ok) break;
+        if (!BRemoveVerifiedTree(base, url.lastPathComponent, error)) { ok = NO; break; }
+        fsync(base);
+        [deleted addObject:url];
+    }
+    if (ok && ![plan[@"marked"] boolValue]) ok = BWriteRetentionMarker(base, error);
+    close(base);
+    return ok ? deleted : nil;
+}
+- (NSDictionary<NSString *, id> *)retentionPlanInDirectory:(NSURL *)directory error:(NSError **)error {
+    [BLock lock]; @try {
+        __block NSDictionary *plan = nil;
+        [self coordinate:directory writing:NO block:^BOOL(NSURL *actual, NSError **e) {
+            plan = [self retentionPlanUncoordinated:actual error:e];
+            return plan != nil;
+        } error:error];
+        return plan;
+    } @finally { [BLock unlock]; }
+}
+- (NSArray<NSURL *> *)applyRetentionInDirectory:(NSURL *)directory confirmed:(BOOL)confirmed error:(NSError **)error {
+    [BLock lock]; @try {
+        __block NSArray *deleted = nil;
+        [self coordinate:directory writing:YES block:^BOOL(NSURL *actual, NSError **e) {
+            deleted = [self retentionApplyUncoordinated:actual confirmed:confirmed error:e];
+            return deleted != nil;
+        } error:error];
+        return deleted;
     } @finally { [BLock unlock]; }
 }
 @end

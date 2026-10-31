@@ -13,6 +13,15 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)restoreBackupAtURL:(NSURL *)backupURL restorePreferences:(BOOL)preferences restoreSources:(BOOL)sources error:(NSError **)error;
 - (NSArray<NSURL *> *)backupsInDirectory:(NSURL *)directory error:(NSError **)error;
 - (BOOL)validateStorageDirectory:(NSURL *)directory error:(NSError **)error;
+/// Read-only. Reports the generated backups beyond the retention limit and whether
+/// the one-time confirmation is still pending for this folder.
+- (nullable NSDictionary<NSString *, id> *)retentionPlanInDirectory:(NSURL *)directory error:(NSError **)error;
+/// Deletes only generated backups beyond the limit. `confirmed` must be YES while the
+/// folder still needs its one-time confirmation; afterwards the marker allows silent runs.
+- (nullable NSArray<NSURL *> *)applyRetentionInDirectory:(NSURL *)directory confirmed:(BOOL)confirmed error:(NSError **)error;
+/// Restore-preview and row metadata. Never returns or lists archived file contents.
+- (nullable NSDictionary<NSString *, id> *)summaryForBackupAtURL:(NSURL *)url error:(NSError **)error;
+- (NSArray<NSDictionary<NSString *, id> *> *)backupSummariesInDirectory:(NSURL *)directory error:(NSError **)error;
 #ifdef DO_BACKUP_TESTING
 /// Test builds only: never linked into the app.
 - (instancetype)initWithTestRoot:(NSString *)root;

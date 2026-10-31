@@ -11,8 +11,11 @@ static void Put(NSString *p, NSData *d) { CHECK([NSFileManager.defaultManager cr
 static NSData *Plist(NSString *v) { return [NSPropertyListSerialization dataWithPropertyList:@{@"value":v} format:NSPropertyListXMLFormat_v1_0 options:0 error:nil]; }
 static NSData *Text(NSString *s) { return [s dataUsingEncoding:NSUTF8StringEncoding]; }
 #include "backup_extension_tests.inc"
+#include "backup_retention_tests.inc"
 int main(void) { @autoreleasepool {
  ExtendedBackupTests();
+ RetentionTests();
+ RestoreSummaryTests();
  NSString *temp=[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
  NSString *root=[temp stringByAppendingPathComponent:@"root"], *store=[temp stringByAppendingPathComponent:@"storage"];
  NSString *prefs=[root stringByAppendingPathComponent:@"var/mobile/Library/Preferences"];

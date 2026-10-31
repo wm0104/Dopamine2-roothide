@@ -17,6 +17,25 @@ static NSString * const BookmarkKey = @"DOConfigurationBackup.StorageBookmark.v1
 static NSError *BUIError(NSString *message) {
     return [NSError errorWithDomain:@"DOBackupUI" code:1 userInfo:@{NSLocalizedDescriptionKey:message}];
 }
+/// Backup rows and the restore preview show a local timestamp, never a file path.
+static NSString *BTimeText(NSDate *date) {
+    static NSDateFormatter *formatter;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        formatter = [NSDateFormatter new];
+        formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+        formatter.dateFormat = @"yyyy-MM-dd HH:mm";
+    });
+    @synchronized (formatter) { return [formatter stringFromDate:date ?: [NSDate dateWithTimeIntervalSince1970:0]]; }
+}
+static NSString *BSizeText(unsigned long long bytes) {
+    if (bytes < 1024) return [NSString stringWithFormat:@"%llu B", bytes];
+    double value = bytes / 1024.0;
+    NSString *unit = @"KB";
+    if (value >= 1024) { value /= 1024.0; unit = @"MB"; }
+    if (value >= 1024) { value /= 1024.0; unit = @"GB"; }
+    return [NSString stringWithFormat:value >= 100 ? @"%.0f %@" : @"%.1f %@", value, unit];
+}
 static dispatch_queue_t BackupUIQueue(void) {
     static dispatch_queue_t queue;
     static dispatch_once_t once;
@@ -39,6 +58,7 @@ static dispatch_queue_t BackupUIQueue(void) {
 @property(nonatomic, strong) NSURL *storageDirectory;
 @property(nonatomic, strong) NSURL *restoreDirectory;
 @property(nonatomic, copy) NSArray<NSURL *> *backupFiles;
+@property(nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *backupSummaries;
 @property(nonatomic) BOOL restoreScopeHeld;
 @property(nonatomic) BOOL preferences;
 @property(nonatomic) BOOL sources;
@@ -120,8 +140,9 @@ static dispatch_queue_t BackupUIQueue(void) {
     [items addObject:[self button:BT(@"Backup_BrowseSaved", @"恢复配置", @"Restore Configuration") image:@"clock.arrow.circlepath" action:@"browsePressed:"]];
     if (self.restoreDirectory) {
         [items addObject:[self group:BT(@"Backup_Files", @"选择备份", @"Choose Backup") footer:self.restoreDirectory.path]];
-        for (NSURL *url in self.backupFiles) {
-            PSSpecifier *file = [PSSpecifier preferenceSpecifierNamed:url.lastPathComponent target:self set:NULL get:NULL detail:nil cell:PSButtonCell edit:nil];
+        for (NSDictionary<NSString *, id> *summary in self.backupSummaries) {
+            NSURL *url = summary[@"url"];
+            PSSpecifier *file = [PSSpecifier preferenceSpecifierNamed:[self summaryTitle:summary] target:self set:NULL get:NULL detail:nil cell:PSButtonCell edit:nil];
             file.buttonAction = @selector(backupPressed:);
             [file setProperty:url forKey:@"backupURL"];
             [items addObject:file];
@@ -140,6 +161,14 @@ static dispatch_queue_t BackupUIQueue(void) {
     [items addObject:[self group:BT(@"Backup_Status", @"操作结果", @"Status") footer:self.statusText ?: BT(@"Backup_Ready", @"等待手动操作。", @"Waiting for a manual action.")]];
     _specifiers = items;
     return _specifiers;
+}
+
+// Rows stay unambiguous without opening anything: time, file count and size.
+- (NSString *)summaryTitle:(NSDictionary<NSString *, id> *)summary {
+    NSString *time = BTimeText(summary[@"created"]);
+    NSNumber *files = [summary[@"files"] isKindOfClass:NSNumber.class] ? summary[@"files"] : @0;
+    NSNumber *bytes = [summary[@"size"] isKindOfClass:NSNumber.class] ? summary[@"size"] : @0;
+    return [NSString stringWithFormat:@"%@ · %@ %@ · %@", time, files, BT(@"Backup_RowFiles", @"个文件", @"files"), BSizeText(bytes.unsignedLongLongValue)];
 }
 
 - (id)scopeValue:(PSSpecifier *)specifier {
@@ -352,8 +381,8 @@ static dispatch_queue_t BackupUIQueue(void) {
         // (including the engine's write/unlink probe), not that BOOL, decides access.
         if (![[DOConfigurationBackupManager sharedManager] validateStorageDirectory:directory error:error]) return nil;
         if (restore) {
-            NSArray *files = [[DOConfigurationBackupManager sharedManager] backupsInDirectory:directory error:error];
-            return files && !*error ? @{@"directory":directory, @"files":files} : nil;
+            NSArray *rows = [[DOConfigurationBackupManager sharedManager] backupSummariesInDirectory:directory error:error];
+            return rows && !*error ? @{@"directory":directory, @"backups":rows} : nil;
         }
         // iOS accepts options:0; macOS-only security-scope bookmark flags are NOT used.
         NSData *bookmark = [directory bookmarkDataWithOptions:0 includingResourceValuesForKeys:nil relativeToURL:nil error:error];
@@ -368,7 +397,7 @@ static dispatch_queue_t BackupUIQueue(void) {
             return;
         }
         if (restore) {
-            [self showBackups:result[@"files"] directory:result[@"directory"]];
+            [self showBackups:result[@"backups"] directory:result[@"directory"]];
         } else {
             [self clearRestoreList];
             self.storageDirectory = result[@"directory"];
@@ -384,16 +413,19 @@ static dispatch_queue_t BackupUIQueue(void) {
     self.restoreScopeHeld = NO;
     self.restoreDirectory = nil;
     self.backupFiles = nil;
+    self.backupSummaries = nil;
 }
 
-- (void)showBackups:(NSArray<NSURL *> *)files directory:(NSURL *)directory {
+- (void)showBackups:(NSArray<NSDictionary<NSString *, id> *> *)files directory:(NSURL *)directory {
     if (![directory isEqual:self.restoreDirectory]) {
         BOOL scoped = [directory startAccessingSecurityScopedResource];
         [self clearRestoreList];
         self.restoreDirectory = directory;
         self.restoreScopeHeld = scoped;
     }
-    self.backupFiles = [[files reverseObjectEnumerator] allObjects];
+    // Newest first; each row is built from the archive summary, not from its name.
+    self.backupSummaries = [[files reverseObjectEnumerator] allObjects];
+    self.backupFiles = [self.backupSummaries valueForKey:@"url"];
     [self refresh];
     if (!files.count) [self showError:BUIError(BT(@"Backup_Empty", @"此目录没有可识别的备份。请在其他目录查找原有备份。", @"No supported backups in this folder. Choose another folder to find existing backups."))];
 }
@@ -419,9 +451,22 @@ static dispatch_queue_t BackupUIQueue(void) {
             return nil;
         }
         if (![[DOConfigurationBackupManager sharedManager] validateStorageDirectory:directory error:error]) return nil;
-        return [[DOConfigurationBackupManager sharedManager] createBackupInDirectory:directory error:error];
+        DOConfigurationBackupManager *manager = [DOConfigurationBackupManager sharedManager];
+        NSURL *backup = [manager createBackupInDirectory:directory error:error];
+        if (!backup) return nil;
+        // Retention never runs before a complete backup is published, never leaves
+        // the validated folder and only removes folders this build created.
+        NSDictionary *plan = [manager retentionPlanInDirectory:directory error:NULL] ?: @{};
+        NSArray *deleted = @[];
+        NSString *cleanupFailure = nil;
+        if (![plan[@"needsConfirmation"] boolValue] && [plan[@"count"] unsignedIntegerValue]) {
+            NSError *cleanupError = nil;
+            NSArray *removed = [manager applyRetentionInDirectory:directory confirmed:NO error:&cleanupError];
+            if (removed) deleted = removed; else cleanupFailure = cleanupError.localizedDescription;
+        }
+        return @{@"backup":backup, @"retention":plan, @"deleted":deleted, @"cleanupFailure":cleanupFailure ?: @""};
     } completion:^(id value, NSError *error) {
-        NSURL *result = value;
+        NSURL *result = value[@"backup"];
         if (!result) {
             // Never fall back to a hidden location or silently renew stale authority.
             self.storageDirectory = nil;
@@ -429,17 +474,63 @@ static dispatch_queue_t BackupUIQueue(void) {
             [self showError:error];
             return;
         }
-        NSDictionary *report = DOConfigurationBackupManager.sharedManager.lastBackupReport;
-        self.statusText = [NSString stringWithFormat:@"%@\n%@\n%@\n%@ %@ / %@ %@\n%@", BT(@"Backup_Created", @"备份已完成", @"Backup Complete"), result.lastPathComponent, directory.path, BT(@"Backup_Included", @"已包含", @"Included"), report[@"included"] ?: @0, BT(@"Backup_Skipped", @"已跳过", @"Skipped"), report[@"skippedCount"] ?: @0, BT(@"Backup_Report", @"系统、敏感、生成及不支持配置的逐项跳过原因见 manifest.json 的 report。", @"Per-file skip reasons for system, sensitive, generated or unsupported data are in manifest.json report.")];
-        if (![self canPresent]) return;
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:BT(@"Backup_Created", @"备份已完成", @"Backup Complete") message:self.statusText preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Done", @"完成", @"Done") style:UIAlertActionStyleCancel handler:nil]];
-        __weak UIAlertController *weakAlert = alert;
-        [alert addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Share", @"分享备份", @"Share Backup") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-            [weakAlert dismissViewControllerAnimated:YES completion:^{ [self shareURL:result directory:directory]; }];
-        }]];
-        [self presentViewController:alert animated:YES completion:nil];
+        // One confirmation per folder, only while old generated backups exist.
+        if ([value[@"retention"][@"needsConfirmation"] boolValue] && [self canPresent]) {
+            [self confirmRetention:value directory:directory];
+            return;
+        }
+        [self presentBackupComplete:result directory:directory report:value];
     }];
+}
+
+// Single, folder-wide confirmation. Deleting writes the marker, so every later
+// cleanup is silent; keeping the backups keeps the marker absent on purpose.
+- (void)confirmRetention:(NSDictionary *)value directory:(NSURL *)directory {
+    NSUInteger count = [value[@"retention"][@"count"] unsignedIntegerValue];
+    NSString *message = [NSString stringWithFormat:@"%@\n\n%@",
+        [NSString stringWithFormat:BT(@"Backup_RetentionMessage", @"检测到 %lu 个旧备份。只保留最新 2 个配置备份和最新 1 个恢复前备份，删除后无法找回。此确认只出现一次，之后自动清理。", @"Found %lu old backups. Only the newest 2 configuration backups and the newest 1 safety backup are kept; deleted data cannot be recovered. This confirmation appears once; later cleanups are automatic."), (unsigned long)count],
+        BT(@"Backup_RetentionScope", @"只删除本应用创建的备份文件夹，其他文件、旧版本备份和其他目录保持不变。", @"Only backup folders created by this app are removed. Other files, older-version backups and other folders stay untouched.")];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:BT(@"Backup_RetentionTitle", @"清理旧备份", @"Clean Up Old Backups") message:message preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:BT(@"Backup_RetentionKeep", @"暂不删除", @"Keep Them") style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+        [self presentBackupComplete:value[@"backup"] directory:directory report:value];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:BT(@"Backup_RetentionDelete", @"删除旧备份", @"Delete Old Backups") style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        [self deleteRetainedBackups:value directory:directory];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)deleteRetainedBackups:(NSDictionary *)value directory:(NSURL *)directory {
+    NSURL *backup = value[@"backup"];
+    [self performAtURL:directory work:^id(NSError **error) {
+        return [[DOConfigurationBackupManager sharedManager] applyRetentionInDirectory:directory confirmed:YES error:error];
+    } completion:^(id removed, NSError *error) {
+        NSMutableDictionary *report = [value mutableCopy];
+        if ([removed isKindOfClass:NSArray.class]) report[@"deleted"] = removed;
+        else report[@"cleanupFailure"] = error.localizedDescription ?: BT(@"Backup_RetentionFailed", @"旧备份未能删除。", @"Old backups were not deleted.");
+        [self presentBackupComplete:backup directory:directory report:report];
+    }];
+}
+
+- (void)presentBackupComplete:(NSURL *)result directory:(NSURL *)directory report:(NSDictionary *)value {
+    NSDictionary *snapshot = DOConfigurationBackupManager.sharedManager.lastBackupReport;
+    NSMutableArray *lines = [NSMutableArray arrayWithObjects:BT(@"Backup_Created", @"备份已完成", @"Backup Complete"), result.lastPathComponent, directory.path, nil];
+    [lines addObject:[NSString stringWithFormat:@"%@ %@ / %@ %@", BT(@"Backup_Included", @"已包含", @"Included"), snapshot[@"included"] ?: @0, BT(@"Backup_Skipped", @"已跳过", @"Skipped"), snapshot[@"skippedCount"] ?: @0]];
+    [lines addObject:[NSString stringWithFormat:@"%@ %@ %@", BT(@"Backup_NotIncluded", @"未纳入", @"Not included"), snapshot[@"skippedCount"] ?: @0, BT(@"Backup_Items", @"项", @"items")]];
+    if ([value[@"deleted"] isKindOfClass:NSArray.class] && [value[@"deleted"] count])
+        [lines addObject:[NSString stringWithFormat:@"%@ %lu %@", BT(@"Backup_RetentionDeleted", @"已清理旧备份", @"Old backups removed"), (unsigned long)[value[@"deleted"] count], BT(@"Backup_Items", @"项", @"items")]];
+    if ([value[@"cleanupFailure"] length]) [lines addObject:value[@"cleanupFailure"]];
+    [lines addObject:BT(@"Backup_Report", @"系统、敏感、生成及不支持配置的逐项跳过原因见 manifest.json 的 report。", @"Per-file skip reasons for system, sensitive, generated or unsupported data are in manifest.json report.")];
+    self.statusText = [lines componentsJoinedByString:@"\n"];
+    [self refresh];
+    if (![self canPresent]) return;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:BT(@"Backup_Created", @"备份已完成", @"Backup Complete") message:self.statusText preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Done", @"完成", @"Done") style:UIAlertActionStyleCancel handler:nil]];
+    __weak UIAlertController *weakAlert = alert;
+    [alert addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Share", @"分享备份", @"Share Backup") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [weakAlert dismissViewControllerAnimated:YES completion:^{ [self shareURL:result directory:directory]; }];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)backupPressed:(PSSpecifier *)specifier {
@@ -449,13 +540,38 @@ static dispatch_queue_t BackupUIQueue(void) {
 }
 
 - (void)confirmRestore:(NSURL *)url {
+    if (self.busy || ![self canPresent]) return;
     if (![self requireJailbreak]) return;
     BOOL preferences = self.preferences, sources = self.sources;
+    // The summary is read off the main thread; only counts and a timestamp are shown.
+    [self performAtURL:self.restoreDirectory work:^id(NSError **error) {
+        return [[DOConfigurationBackupManager sharedManager] summaryForBackupAtURL:url error:error];
+    } completion:^(id summary, NSError *error) {
+        if (![summary isKindOfClass:NSDictionary.class]) {
+            [self showError:error ?: BUIError(BT(@"Backup_Unreadable", @"无法读取该备份的摘要。", @"Cannot read this backup's summary."))];
+            return;
+        }
+        [self presentRestoreConfirmation:summary preferences:preferences sources:sources];
+    }];
+}
+
+- (void)presentRestoreConfirmation:(NSDictionary *)summary preferences:(BOOL)preferences sources:(BOOL)sources {
+    NSURL *url = summary[@"url"];
     NSMutableArray *scope = [NSMutableArray array];
     if (!preferences && !sources) [scope addObject:BT(@"Backup_ChooseScope", @"至少选择一项恢复内容。", @"Select at least one restore category.")];
     if (preferences) [scope addObject:BT(@"Backup_Preferences", @"配置文件", @"Configuration Files")];
     if (sources) [scope addObject:BT(@"Backup_Sources", @"软件源", @"Package Sources")];
-    NSString *message = [NSString stringWithFormat:@"%@\n%@\n\n%@\n%@", url.lastPathComponent, url.URLByDeletingLastPathComponent.path, [scope componentsJoinedByString:@", "], BT(@"Backup_OverwriteWarning", @"将覆盖上述现有配置，其余内容不变。不安装插件。请仅恢复可信的备份。继续？", @"This overwrites the existing configuration listed above; other contents stay unchanged. No tweaks are installed. Restore only trusted backups. Continue?")];
+    NSNumber *files = [summary[@"files"] isKindOfClass:NSNumber.class] ? summary[@"files"] : @0;
+    NSNumber *bytes = [summary[@"size"] isKindOfClass:NSNumber.class] ? summary[@"size"] : @0;
+    NSNumber *skipped = [summary[@"skipped"] isKindOfClass:NSNumber.class] ? summary[@"skipped"] : @0;
+    // Preview only: file count, total size, backup time and the skipped count.
+    NSString *details = [NSString stringWithFormat:@"%@ %@\n%@ %@\n%@ %@\n%@ %@\n%@ %@",
+        BT(@"Backup_Time", @"备份时间", @"Backup time"), BTimeText(summary[@"created"]),
+        BT(@"Backup_FileCount", @"文件数", @"Files"), files,
+        BT(@"Backup_Size", @"大小", @"Size"), BSizeText(bytes.unsignedLongLongValue),
+        BT(@"Backup_NotIncluded", @"未纳入", @"Not included"), skipped,
+        BT(@"Backup_Scope", @"恢复内容", @"Restore contents"), [scope componentsJoinedByString:BT(@"Backup_ListSeparator", @"、", @", ")]];
+    NSString *message = [NSString stringWithFormat:@"%@\n\n%@\n%@", url.lastPathComponent, details, BT(@"Backup_OverwriteWarning", @"将覆盖上述现有配置，其余内容不变。不安装插件。请仅恢复可信的备份。继续？", @"This overwrites the existing configuration listed above; other contents stay unchanged. No tweaks are installed. Restore only trusted backups. Continue?")];
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:BT(@"Backup_ConfirmRestore", @"确认恢复", @"Confirm Restore") message:message preferredStyle:UIAlertControllerStyleAlert];
     __weak UIAlertController *weakAlert = alert;
     [alert addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Share", @"分享备份", @"Share Backup") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
@@ -469,10 +585,21 @@ static dispatch_queue_t BackupUIQueue(void) {
                 *error = BUIError(BT(@"Backup_JailbreakRequired", @"请先完成越狱，再执行备份或恢复。", @"Activate the jailbreak before backing up or restoring."));
                 return nil;
             }
-            return [[DOConfigurationBackupManager sharedManager] restoreBackupAtURL:url restorePreferences:preferences restoreSources:sources error:error] ? @YES : nil;
+            DOConfigurationBackupManager *manager = [DOConfigurationBackupManager sharedManager];
+            if (![manager restoreBackupAtURL:url restorePreferences:preferences restoreSources:sources error:error]) return nil;
+            // The safety backup created by the restore is covered by the same limit;
+            // a folder that still needs its one-time confirmation is left for the next backup.
+            NSDictionary *plan = [manager retentionPlanInDirectory:self.restoreDirectory error:NULL];
+            NSArray *removed = @[];
+            if (plan && ![plan[@"needsConfirmation"] boolValue] && [plan[@"count"] unsignedIntegerValue])
+                removed = [manager applyRetentionInDirectory:self.restoreDirectory confirmed:NO error:NULL] ?: @[];
+            return @{@"restored":@YES, @"removed":@(removed.count)};
         } completion:^(id result, NSError *error) {
             if (!result) { [self showError:error]; return; }
-            self.statusText = [NSString stringWithFormat:@"%@\n%@\n%@", BT(@"Backup_Restored", @"配置恢复成功，未自动注销。", @"Configuration restored. No automatic respring."), url.lastPathComponent, self.restoreDirectory.path];
+            NSMutableArray *lines = [NSMutableArray arrayWithObjects:BT(@"Backup_Restored", @"配置恢复成功，未自动注销。", @"Configuration restored. No automatic respring."), url.lastPathComponent, self.restoreDirectory.path, nil];
+            if ([result[@"removed"] unsignedIntegerValue])
+                [lines addObject:[NSString stringWithFormat:@"%@ %lu %@", BT(@"Backup_RetentionDeleted", @"已清理旧备份", @"Old backups removed"), (unsigned long)[result[@"removed"] unsignedIntegerValue], BT(@"Backup_Items", @"项", @"items")]];
+            self.statusText = [lines componentsJoinedByString:@"\n"];
             [self offerRespring];
         }];
     }];
