@@ -111,6 +111,21 @@ static BOOL BGeneratedName(NSString *name, BOOL *safety) {
     if (safety) *safety = safe;
     return YES;
 }
+// Older builds of this app named archives after a UUID only. These count toward
+// the same limit, but a name alone is never trusted: the manifest must be ours.
+static BOOL BLegacyName(NSString *name, BOOL *safety) {
+    if (![name isKindOfClass:NSString.class] || !name.length || name.pathComponents.count != 1) return NO;
+    BOOL safe = [name hasPrefix:@"SafetyBackup-"];
+    if (!safe && ![name hasPrefix:@"ConfigurationBackup-"]) return NO;
+    static NSRegularExpression *rule;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        rule = [NSRegularExpression regularExpressionWithPattern:@"^(ConfigurationBackup|SafetyBackup)-[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$" options:0 error:nil];
+    });
+    if ([rule numberOfMatchesInString:name options:0 range:NSMakeRange(0, name.length)] != 1) return NO;
+    if (safety) *safety = safe;
+    return YES;
+}
 static BOOL BWriteRetentionMarker(int base, NSError **error) {
     int fd = openat(base, BRetentionMarker.fileSystemRepresentation, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (fd < 0) return errno == EEXIST || BFail(error, @"Cannot record the one-time cleanup confirmation");
@@ -580,16 +595,26 @@ static BOOL BRemoveVerifiedTree(int parent, NSString *name, NSError **error) {
     NSArray<NSDictionary<NSString *, id> *> *rows = [self backupSummariesInDirectory:directory error:error];
     return [rows valueForKey:@"url"] ?: @[];
 }
-- (BOOL)archiveIsOurs:(NSString *)name base:(int)base {
+// Only a folder carrying our own manifest counts as an archive. The returned
+// value is the manifest creation epoch (folder mtime only if that key is absent).
+- (NSNumber *)archiveCreatedNamed:(NSString *)name base:(int)base {
     int fd = openat(base, name.fileSystemRepresentation, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-    if (fd < 0) return NO;
+    if (fd < 0) return nil;
     BOOL absent = NO;
     NSData *data = BRead(fd, @"manifest.json", NULL, &absent, NULL);
     close(fd);
-    if (!data) return NO;
+    struct stat st = {0};
+    BOOL statted = fstatat(base, name.fileSystemRepresentation, &st, AT_SYMLINK_NOFOLLOW) == 0;
+    if (!data) return nil;
     id object = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-    return [object isKindOfClass:NSDictionary.class] && [object[@"format"] isEqual:@"org.roothide.configuration-backup"] &&
-        [object[@"version"] isEqual:@1] && [object[@"files"] isKindOfClass:NSArray.class];
+    if (![object isKindOfClass:NSDictionary.class] || ![object[@"format"] isEqual:@"org.roothide.configuration-backup"] ||
+        ![object[@"version"] isEqual:@1] || ![object[@"files"] isKindOfClass:NSArray.class]) return nil;
+    NSNumber *created = [object[@"created"] isKindOfClass:NSNumber.class] ? object[@"created"] : nil;
+    if (!created && statted) created = @((double)st.st_mtimespec.tv_sec + (double)st.st_mtimespec.tv_nsec / 1e9);
+    return created ?: @0;
+}
+- (BOOL)archiveIsOurs:(NSString *)name base:(int)base {
+    return [self archiveCreatedNamed:name base:base] != nil;
 }
 - (NSDictionary<NSString *, id> *)summaryForBackupAtURL:(NSURL *)url error:(NSError **)error {
     [BLock lock]; @try {
@@ -620,7 +645,7 @@ static BOOL BRemoveVerifiedTree(int parent, NSString *name, NSError **error) {
         NSNumber *reported = [manifest[@"report"] isKindOfClass:NSDictionary.class] ? manifest[@"report"][@"skippedCount"] : nil;
         NSUInteger skipped = [reported isKindOfClass:NSNumber.class] ? reported.unsignedIntegerValue : (regular > archive.count ? regular - archive.count : 0);
         return @{@"url":url, @"files":@(archive.count), @"size":@(size), @"created":created ?: [NSDate dateWithTimeIntervalSince1970:0],
-                 @"skipped":@(skipped), @"safety":@([url.lastPathComponent hasPrefix:@"恢复前备份_"]), @"legacy":@(manifest == nil)};
+                 @"skipped":@(skipped), @"safety":@([url.lastPathComponent hasPrefix:@"恢复前备份_"] || [url.lastPathComponent hasPrefix:@"SafetyBackup-"]), @"legacy":@(manifest == nil)};
     } @finally { [BLock unlock]; }
 }
 - (NSArray<NSDictionary<NSString *, id> *> *)backupSummariesInDirectory:(NSURL *)directory error:(NSError **)error {
@@ -662,24 +687,31 @@ static BOOL BRemoveVerifiedTree(int parent, NSString *name, NSError **error) {
         NSString *name = [NSString stringWithUTF8String:entry->d_name];
         if (!name || [name isEqual:@"."] || [name isEqual:@".."]) continue;
         BOOL isSafety = NO;
-        if (!BGeneratedName(name, &isSafety)) continue;
+        if (!BGeneratedName(name, &isSafety) && !BLegacyName(name, &isSafety)) continue;
         struct stat st;
         if (fstatat(base, entry->d_name, &st, AT_SYMLINK_NOFOLLOW)) { ok = BFail(error, @"Cannot inspect a backup folder"); break; }
         // Symlinks, files and folders that are not ours are never candidates.
-        if (!S_ISDIR(st.st_mode) || ![self archiveIsOurs:name base:base]) continue;
-        [(isSafety ? safety : manual) addObject:name];
+        if (!S_ISDIR(st.st_mode)) continue;
+        NSNumber *created = [self archiveCreatedNamed:name base:base];
+        if (!created) continue;
+        [(isSafety ? safety : manual) addObject:@{@"name":name, @"created":created}];
     }
     struct stat marker = {0};
     BOOL marked = fstatat(base, BRetentionMarker.fileSystemRepresentation, &marker, AT_SYMLINK_NOFOLLOW) == 0 && S_ISREG(marker.st_mode);
     closedir(stream); close(base);
     if (!ok) return nil;
-    NSComparator byName = ^NSComparisonResult(NSString *a, NSString *b) { return [a compare:b options:NSNumericSearch]; };
-    [manual sortUsingComparator:byName]; [safety sortUsingComparator:byName];
+    // Legacy names carry no time, so the manifest decides; the name is only a tiebreak.
+    NSComparator newestFirst = ^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        NSComparisonResult byTime = [b[@"created"] compare:a[@"created"]];
+        if (byTime != NSOrderedSame) return byTime;
+        return [b[@"name"] compare:a[@"name"] options:NSNumericSearch];
+    };
+    [manual sortUsingComparator:newestFirst]; [safety sortUsingComparator:newestFirst];
     NSUInteger manualDrop = manual.count > BRetentionManualKeep ? manual.count - BRetentionManualKeep : 0;
     NSUInteger safetyDrop = safety.count > BRetentionSafetyKeep ? safety.count - BRetentionSafetyKeep : 0;
     NSMutableArray *candidates = [NSMutableArray array], *kept = [NSMutableArray array];
-    for (NSUInteger i = 0; i < manual.count; i++) [(i < manualDrop ? candidates : kept) addObject:manual[i]];
-    for (NSUInteger i = 0; i < safety.count; i++) [(i < safetyDrop ? candidates : kept) addObject:safety[i]];
+    for (NSUInteger i = 0; i < manual.count; i++) [(i < manual.count - manualDrop ? kept : candidates) addObject:manual[i][@"name"]];
+    for (NSUInteger i = 0; i < safety.count; i++) [(i < safety.count - safetyDrop ? kept : candidates) addObject:safety[i][@"name"]];
     NSMutableArray *urls = [NSMutableArray array];
     for (NSString *name in candidates) [urls addObject:[directory URLByAppendingPathComponent:name isDirectory:YES]];
     return @{@"candidates":urls, @"count":@(urls.count), @"kept":@(kept.count), @"manualKept":@(manual.count - manualDrop),
@@ -697,7 +729,7 @@ static BOOL BRemoveVerifiedTree(int parent, NSString *name, NSError **error) {
     for (NSURL *url in targets) {
         BOOL isSafety = NO; NSMutableArray *entries = [NSMutableArray array]; NSUInteger bytes = 0;
         // Resolve only the fixed system aliases (/var -> /private/var); no archive path is followed.
-        if (!BGeneratedName(url.lastPathComponent, &isSafety) || ![self archiveIsOurs:url.lastPathComponent base:base] ||
+        if (!(BGeneratedName(url.lastPathComponent, &isSafety) || BLegacyName(url.lastPathComponent, &isSafety)) || ![self archiveIsOurs:url.lastPathComponent base:base] ||
             ![self walk:BCanonical(url.path) prefix:@"" files:entries bytes:&bytes error:error]) {
             if (error && !*error) BFail(error, @"A backup folder is not safe to delete");
             ok = NO; break;
