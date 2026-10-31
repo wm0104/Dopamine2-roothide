@@ -20,6 +20,13 @@ class BackupUIGuards(unittest.TestCase):
         self.assertNotIn("pushViewController:", SOURCE)
         self.assertNotIn("setNavigationControllerDelegate", SOURCE)
 
+    def test_row_summary_shows_manifest_time_not_raw_name(self):
+        title = SOURCE.split("- (NSString *)summaryTitle:", 1)[1].split("- (id)scopeValue:", 1)[0]
+        self.assertIn('summary[@"created"]', title)
+        self.assertIn('summary[@"files"]', title)
+        self.assertIn('summary[@"size"]', title)
+        self.assertNotIn("lastPathComponent", title)
+
     def test_two_primary_actions_and_inline_restore(self):
         specifiers = SOURCE.split("- (NSArray *)specifiers", 1)[1].split("- (id)scopeValue:", 1)[0]
         self.assertEqual(specifiers.count("[self button:"), 2)

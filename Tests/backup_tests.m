@@ -15,6 +15,7 @@ static NSData *Text(NSString *s) { return [s dataUsingEncoding:NSUTF8StringEncod
 int main(void) { @autoreleasepool {
  ExtendedBackupTests();
  RetentionTests();
+ LegacyRetentionTests();
  RestoreSummaryTests();
  NSString *temp=[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
  NSString *root=[temp stringByAppendingPathComponent:@"root"], *store=[temp stringByAppendingPathComponent:@"storage"];
