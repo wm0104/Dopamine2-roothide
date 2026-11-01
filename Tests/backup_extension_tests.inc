@@ -16,6 +16,7 @@ static void ExtendedBackupTests(void) {
         @"RootHide/.wm0104-source-migration-v1":Text(@"1\n"),
         @"RootHide/varCleanRules-custom.plist":Plist(@"rules"),
         @"CallAssistActivation/Activation.plist":Text(@"synthetic license"),
+        @"Filza/test.txt":Text(@"fixture"),
         @"Snapper3/license":Text(@"synthetic binary"),
         @"Snapper3/Images/image.bin":[NSMutableData dataWithLength:3 * 1024 * 1024]};
     for (NSString *path in config) Put([library stringByAppendingPathComponent:path], config[path]);
@@ -40,7 +41,7 @@ static void ExtendedBackupTests(void) {
     for (NSString *path in config) CHECK([archive[@"files"][[ @"config/" stringByAppendingString:path]] isEqual:config[path]]);
     for (NSString *name in sources) CHECK([archive[@"files"][[ @"sources/sources.list.d/" stringByAppendingString:name]] isEqual:sources[name]]);
     CHECK([m.lastBackupReport[@"skippedCount"] unsignedIntegerValue] == 0);
-    NSArray *roots = @[@"Preferences", @"ControlCenter", @"CallAssist", @"RootHide", @"CallAssistActivation", @"Snapper3"];
+    NSArray *roots = @[@"Preferences", @"ControlCenter", @"CallAssist", @"RootHide", @"CallAssistActivation", @"Snapper3", @"Filza"];
     for (NSString *name in roots) Put([[library stringByAppendingPathComponent:name] stringByAppendingPathComponent:@"extra-after-backup"], Text(@"remove"));
     Put([apt stringByAppendingPathComponent:@"extra.list"], Text(@"remove")); Put(pref, Plist(@"changed"));
     CHECK([m restoreBackupAtURL:backup restorePreferences:YES restoreSources:NO error:&e]);

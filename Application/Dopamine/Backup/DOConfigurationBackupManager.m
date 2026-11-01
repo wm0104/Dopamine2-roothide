@@ -14,10 +14,10 @@
 #import <dispatch/dispatch.h>
 
 #import "DOBackupFileIO.h"
-// Only these seven folders can ever be backed up or replaced.
+// Only these eight folders can ever be backed up or replaced.
 static NSArray<NSString *> *BBackupFolders(void) {
     return @[@"config/Preferences", @"config/ControlCenter", @"config/CallAssist",
-             @"config/RootHide", @"config/CallAssistActivation", @"config/Snapper3", @"sources/sources.list.d"];
+             @"config/RootHide", @"config/CallAssistActivation", @"config/Snapper3", @"config/Filza", @"sources/sources.list.d"];
 }
 static NSString *BFolderForPath(NSString *path) {
     if (BPath(path)) for (NSString *folder in BBackupFolders()) if (BUnder(path, folder)) return folder;

@@ -9,7 +9,7 @@ UI = (ROOT / "Application/Dopamine/Backup/DOBackupController.m").read_text()
 
 class FolderBackupGuards(unittest.TestCase):
     def test_exact_folder_scope(self):
-        for folder in ("Preferences", "ControlCenter", "CallAssist", "RootHide", "CallAssistActivation", "Snapper3"):
+        for folder in ("Preferences", "ControlCenter", "CallAssist", "RootHide", "CallAssistActivation", "Snapper3", "Filza"):
             self.assertIn(f'@"config/{folder}"', ENGINE)
         self.assertIn('@"sources/sources.list.d"', ENGINE)
 
@@ -32,6 +32,8 @@ class FolderBackupGuards(unittest.TestCase):
         self.assertIn("Destination changed after safety backup", ENGINE)
 
     def test_ui_describes_directory_replacement(self):
+        self.assertIn("Snapper3、Filza 和 sources.list.d", UI)
+        self.assertIn("Snapper3, Filza and sources.list.d", UI)
         self.assertIn("整目录替换", UI)
         self.assertIn("备份中没有的现有文件", UI)
         self.assertNotIn("只恢复勾选的内容，覆盖对应配置", UI)
