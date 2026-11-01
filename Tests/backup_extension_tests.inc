@@ -1,139 +1,128 @@
-#import <sys/xattr.h>
-// Synthetic data only. Never access device roots or real authorization material.
+// Synthetic fixtures only. No device roots or real authorization material.
 static void ExtendedBackupTests(void) {
- NSString *temp=[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
- NSString *root=[temp stringByAppendingPathComponent:@"root"], *store=[temp stringByAppendingPathComponent:@"storage"];
- NSString *library=[root stringByAppendingPathComponent:@"var/mobile/Library"];
- NSArray *paths=@[@"ControlCenter/ModuleConfiguration_CCSupport.plist", @"CallAssistActivation/Activation.plist", @"Snapper3/license"];
- unsigned char bytes[256]; for (NSUInteger i=0;i<sizeof(bytes);i++) bytes[i]=(unsigned char)i;
- NSData *binary=[NSData dataWithBytes:bytes length:sizeof(bytes)];
- NSData *activation=[NSPropertyListSerialization dataWithPropertyList:@{@"deviceid":@"synthetic-device", @"authorization":@"synthetic-authorization"} format:NSPropertyListBinaryFormat_v1_0 options:0 error:nil];
- NSArray *values=@[Plist(@"layout"),activation,binary];
- Put([root stringByAppendingPathComponent:@"etc/apt/sources.list"],Text(@"deb https://fixture.example/ ./\n"));
- CHECK([NSFileManager.defaultManager createDirectoryAtPath:library withIntermediateDirectories:YES attributes:nil error:nil]);
- CHECK([NSFileManager.defaultManager createDirectoryAtPath:store withIntermediateDirectories:YES attributes:nil error:nil]);
- DOConfigurationBackupManager *m=[[DOConfigurationBackupManager alloc] initWithTestRoot:root]; NSError *e=nil;
- NSURL *folder=[NSURL fileURLWithPath:store];
- NSURL *old=[m createBackupInDirectory:folder error:&e]; CHECK(old);
- CHECK([m restoreBackupAtURL:old restorePreferences:YES restoreSources:NO error:&e]);
- for (NSUInteger i=0;i<paths.count;i++) Put([library stringByAppendingPathComponent:paths[i]],values[i]);
- NSArray *excluded=@[@"Snapper3/statistics.plist",@"Snapper3/Plugins/file.plist",@"Snapper3/Images/image",@"Snapper3/ImagesThumbnails/thumb",@"CallAssistActivation/other.plist",@"ControlCenter/other.plist",@"Preferences/org.example.authorization.plist"];
- for (NSString *path in excluded) Put([library stringByAppendingPathComponent:path],activation);
- NSURL *backup=[m createBackupInDirectory:folder error:&e]; CHECK(backup);
- NSDictionary *loaded=[m loadArchive:backup error:&e]; CHECK(loaded);
- for (NSUInteger i=0;i<paths.count;i++) CHECK([loaded[[@"config/" stringByAppendingString:paths[i]]] isEqual:values[i]]);
- for (NSString *path in excluded) CHECK(!loaded[[@"config/" stringByAppendingString:path]]);
- // Category isolation and lossless binary restore; preserve destination metadata.
- struct stat before[3];
- for (NSUInteger i=0;i<paths.count;i++) {
-  NSString *p=[library stringByAppendingPathComponent:paths[i]]; Put(p,i==2?Text(@"changed-binary"):Plist(@"changed"));
-  CHECK(chmod(p.fileSystemRepresentation,0600+i*4)==0); CHECK(stat(p.fileSystemRepresentation,&before[i])==0);
-  CHECK(setxattr(p.fileSystemRepresentation,"org.dopamine.synthetic",bytes,1,0,0)==0);
- }
- CHECK([m restoreBackupAtURL:backup restorePreferences:NO restoreSources:YES error:&e]);
- CHECK([[NSData dataWithContentsOfFile:[library stringByAppendingPathComponent:paths[2]]] isEqual:Text(@"changed-binary")]);
- CHECK([m restoreBackupAtURL:backup restorePreferences:YES restoreSources:NO error:&e]);
- for (NSUInteger i=0;i<paths.count;i++) {
-  NSString *p=[library stringByAppendingPathComponent:paths[i]]; struct stat after;
-  CHECK([[NSData dataWithContentsOfFile:p] isEqual:values[i]]); CHECK(stat(p.fileSystemRepresentation,&after)==0);
-  CHECK((after.st_mode&0777)==(before[i].st_mode&0777) && after.st_uid==before[i].st_uid && after.st_gid==before[i].st_gid);
-  CHECK(after.st_mtimespec.tv_sec==before[i].st_mtimespec.tv_sec && after.st_mtimespec.tv_nsec==before[i].st_mtimespec.tv_nsec);
-  unsigned char attribute=255; CHECK(getxattr(p.fileSystemRepresentation,"org.dopamine.synthetic",&attribute,1,0,0)==1 && attribute==bytes[0]);
- }
- // A source sorted after the three new config paths forces failure after all three writes.
- NSString *legacy=[store stringByAppendingPathComponent:@"legacy-extended"];
- for (NSUInteger i=0;i<paths.count;i++) Put([[legacy stringByAppendingPathComponent:@"插件配置备份/Library"] stringByAppendingPathComponent:paths[i]],values[i]);
- for (NSString *p in excluded) Put([[legacy stringByAppendingPathComponent:@"插件配置备份/Library"] stringByAppendingPathComponent:p],activation);
- Put([legacy stringByAppendingPathComponent:@"源地址备份/new.list"],Text(@"deb https://other-fixture.example/ ./\n"));
- NSURL *legacyURL=[NSURL fileURLWithPath:legacy];
- // Eligible Preferences containing secrets fail closed; unsupported siblings are ignored.
- CHECK(![m loadArchive:legacyURL error:&e]);
- CHECK([NSFileManager.defaultManager removeItemAtPath:[legacy stringByAppendingPathComponent:@"插件配置备份/Library/Preferences/org.example.authorization.plist"] error:nil]);
- CHECK([m loadArchive:legacyURL error:&e].count==4);
- for (NSUInteger i=0;i<paths.count;i++) {
-  NSString *p=[library stringByAppendingPathComponent:paths[i]]; Put(p,i==2?Text(@"rollback-binary"):Plist(@"rollback-plist"));
-  CHECK(chmod(p.fileSystemRepresentation,0600)==0); CHECK(stat(p.fileSystemRepresentation,&before[i])==0);
-  CHECK(setxattr(p.fileSystemRepresentation,"org.dopamine.synthetic",bytes,1,0,0)==0);
- }
- m.failAfterWrites=3; CHECK(![m restoreBackupAtURL:legacyURL restorePreferences:YES restoreSources:YES error:&e]);
- for (NSUInteger i=0;i<paths.count;i++) {
-  NSString *p=[library stringByAppendingPathComponent:paths[i]]; struct stat after;
-  CHECK([[NSData dataWithContentsOfFile:p] isEqual:(i==2?Text(@"rollback-binary"):Plist(@"rollback-plist"))]);
-  CHECK(stat(p.fileSystemRepresentation,&after)==0);
-  CHECK((after.st_mode&0777)==(before[i].st_mode&0777) && after.st_uid==before[i].st_uid && after.st_gid==before[i].st_gid);
-  CHECK(after.st_mtimespec.tv_sec==before[i].st_mtimespec.tv_sec && after.st_mtimespec.tv_nsec==before[i].st_mtimespec.tv_nsec);
-  unsigned char attribute=255; CHECK(getxattr(p.fileSystemRepresentation,"org.dopamine.synthetic",&attribute,1,0,0)==1 && attribute==bytes[0]);
- }
- NSArray *archives=[m backupsInDirectory:folder error:&e]; BOOL safetyFound=NO;
- for (NSURL *url in archives) if ([url.lastPathComponent hasPrefix:@"恢复前备份_"]) {
-  NSDictionary *safety=[m loadArchive:url error:&e];
-  if ([safety[@"config/Snapper3/license"] isEqual:Text(@"rollback-binary")]) safetyFound=YES;
- }
- CHECK(safetyFound); m.failAfterWrites=-1;
- CHECK([m restoreBackupAtURL:legacyURL restorePreferences:YES restoreSources:NO error:&e]);
- for (NSUInteger i=0;i<paths.count;i++) CHECK([[NSData dataWithContentsOfFile:[library stringByAppendingPathComponent:paths[i]]] isEqual:values[i]]);
- // Missing directories are created only as needed, and removed again on rollback.
- for (NSString *dir in @[@"ControlCenter",@"CallAssistActivation",@"Snapper3"]) CHECK([NSFileManager.defaultManager removeItemAtPath:[library stringByAppendingPathComponent:dir] error:nil]);
- m.failAfterWrites=3; CHECK(![m restoreBackupAtURL:legacyURL restorePreferences:YES restoreSources:YES error:&e]);
- for (NSString *dir in @[@"ControlCenter",@"CallAssistActivation",@"Snapper3"]) CHECK(![NSFileManager.defaultManager fileExistsAtPath:[library stringByAppendingPathComponent:dir]]);
- m.failAfterWrites=-1; CHECK([m restoreBackupAtURL:legacyURL restorePreferences:YES restoreSources:NO error:&e]);
- for (NSUInteger i=0;i<paths.count;i++) CHECK([[NSData dataWithContentsOfFile:[library stringByAppendingPathComponent:paths[i]]] isEqual:values[i]]);
- // Tampered current archives reject siblings, traversal, symlinks and hardlinks.
- NSString *manifest=[backup.path stringByAppendingPathComponent:@"manifest.json"];
- NSData *originalManifest=[NSData dataWithContentsOfFile:manifest];
- for (NSString *relative in excluded) {
-  NSString *file=[@"config/" stringByAppendingString:relative];
-  NSMutableDictionary *json=[[NSJSONSerialization JSONObjectWithData:originalManifest options:NSJSONReadingMutableContainers error:nil] mutableCopy];
-  json[@"files"]=[json[@"files"] arrayByAddingObject:file];
-  Put([backup.path stringByAppendingPathComponent:file],activation); Put(manifest,[NSJSONSerialization dataWithJSONObject:json options:0 error:nil]);
-  CHECK(![m loadArchive:backup error:&e]);
-  CHECK([NSFileManager.defaultManager removeItemAtPath:[backup.path stringByAppendingPathComponent:file] error:nil]);
- }
- Put(manifest,originalManifest);
- for (NSString *relative in @[@"config/Snapper3/../license",@"config/CallAssistActivation/./Activation.plist",@"/config/Snapper3/license"]) {
-  NSMutableDictionary *json=[[NSJSONSerialization JSONObjectWithData:originalManifest options:NSJSONReadingMutableContainers error:nil] mutableCopy]; json[@"files"]=@[relative];
-  Put(manifest,[NSJSONSerialization dataWithJSONObject:json options:0 error:nil]); CHECK(![m loadArchive:backup error:&e]);
- }
- Put(manifest,originalManifest);
- for (NSUInteger i=0;i<paths.count;i++) {
-  NSString *archived=[[backup.path stringByAppendingPathComponent:@"config"] stringByAppendingPathComponent:paths[i]];
-  NSString *live=[library stringByAppendingPathComponent:paths[i]];
-  CHECK([NSFileManager.defaultManager removeItemAtPath:archived error:nil]); CHECK(symlink(live.fileSystemRepresentation,archived.fileSystemRepresentation)==0);
-  CHECK(![m loadArchive:backup error:&e]); CHECK([NSFileManager.defaultManager removeItemAtPath:archived error:nil]);
-  CHECK(link(live.fileSystemRepresentation,archived.fileSystemRepresentation)==0); CHECK(![m loadArchive:backup error:&e]);
-  CHECK([NSFileManager.defaultManager removeItemAtPath:archived error:nil]); Put(archived,values[i]);
-  // Unsafe destination also refuses preflight without writes.
-  CHECK([NSFileManager.defaultManager removeItemAtPath:live error:nil]); CHECK(symlink(archived.fileSystemRepresentation,live.fileSystemRepresentation)==0);
-  CHECK(![m restoreBackupAtURL:backup restorePreferences:YES restoreSources:NO error:&e]);
-  CHECK([NSFileManager.defaultManager removeItemAtPath:live error:nil]);
-  CHECK(link(archived.fileSystemRepresentation,live.fileSystemRepresentation)==0); CHECK(![m restoreBackupAtURL:backup restorePreferences:YES restoreSources:NO error:&e]);
-  CHECK([NSFileManager.defaultManager removeItemAtPath:live error:nil]); Put(live,values[i]);
- }
- // Parent symlinks are never trusted below the runtime Library anchor.
- NSString *snapper=[library stringByAppendingPathComponent:@"Snapper3"];
- CHECK([NSFileManager.defaultManager removeItemAtPath:snapper error:nil]);
- CHECK(symlink([backup.path stringByAppendingPathComponent:@"config/Snapper3"].fileSystemRepresentation,snapper.fileSystemRepresentation)==0);
- CHECK(![m restoreBackupAtURL:backup restorePreferences:YES restoreSources:NO error:&e]);
- CHECK([NSFileManager.defaultManager removeItemAtPath:snapper error:nil]); Put([library stringByAppendingPathComponent:paths[2]],binary);
- // Dictionary validation applies to both plist paths, not just well-formed plist syntax.
- NSData *arrayPlist=[NSPropertyListSerialization dataWithPropertyList:@[@"synthetic"] format:NSPropertyListBinaryFormat_v1_0 options:0 error:nil];
- for (NSUInteger i=0;i<2;i++) {
-  NSString *archived=[[backup.path stringByAppendingPathComponent:@"config"] stringByAppendingPathComponent:paths[i]];
-  Put(archived,arrayPlist); CHECK(![m loadArchive:backup error:&e]); Put(archived,values[i]);
- }
- // Exact license exception only: layout retains secret detection, activation requires a dictionary.
- NSArray *invalid=@[activation,Text(@"not-a-plist"),[NSMutableData dataWithLength:65537]];
- for (NSUInteger i=0;i<paths.count;i++) {
-  NSString *live=[library stringByAppendingPathComponent:paths[i]]; Put(live,invalid[i]);
-  NSURL *skipped=[m createBackupInDirectory:folder error:&e]; CHECK(skipped);
-  CHECK(![m loadArchive:skipped error:&e][[@"config/" stringByAppendingString:paths[i]]]);
-  CHECK([m.lastBackupReport[@"skippedCount"] unsignedIntegerValue]>0);
-  // Invalid existing destination cannot be overwritten outside the safety snapshot.
-  CHECK(![m restoreBackupAtURL:backup restorePreferences:YES restoreSources:NO error:&e]);
-  NSString *archived=[[backup.path stringByAppendingPathComponent:@"config"] stringByAppendingPathComponent:paths[i]];
-  Put(archived,invalid[i]); CHECK(![m loadArchive:backup error:&e]); Put(archived,values[i]); Put(live,values[i]);
- }
- NSString *license=[library stringByAppendingPathComponent:paths[2]]; Put(license,[NSData data]);
- NSURL *empty=[m createBackupInDirectory:folder error:&e]; CHECK(empty); CHECK(![m loadArchive:empty error:&e][@"config/Snapper3/license"]);
- CHECK([NSFileManager.defaultManager removeItemAtPath:temp error:nil]);
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *temp = [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
+    NSString *root = [temp stringByAppendingPathComponent:@"root"], *store = [temp stringByAppendingPathComponent:@"storage"];
+    NSString *library = [root stringByAppendingPathComponent:@"var/mobile/Library"];
+    NSString *apt = [root stringByAppendingPathComponent:@"etc/apt/sources.list.d"];
+    NSDictionary *config = @{@"Preferences/com.apple.test.plist":Plist(@"system-pref"),
+        @"Preferences/device-authorization.plist":Text(@"opaque credential/device config"),
+        @"Preferences/nested/config.json":Text(@"{}"),
+        @"ControlCenter/ModuleConfiguration_CCSupport.plist":Plist(@"layout"),
+        @"CallAssist/ZSSMSblacklist.db":Text(@"synthetic database"),
+        @"CallAssist/theme/nested/theme.bin":Text(@"theme"),
+        @"RootHide/cn.zqbb.inject.plist":Plist(@"inject"),
+        @"RootHide/cn.zqbb.inject.system.plist":Plist(@"system inject"),
+        @"RootHide/.wm0104-source-migration-v1":Text(@"1\n"),
+        @"RootHide/varCleanRules-custom.plist":Plist(@"rules"),
+        @"CallAssistActivation/Activation.plist":Text(@"synthetic license"),
+        @"Snapper3/license":Text(@"synthetic binary"),
+        @"Snapper3/Images/image.bin":[NSMutableData dataWithLength:3 * 1024 * 1024]};
+    for (NSString *path in config) Put([library stringByAppendingPathComponent:path], config[path]);
+    NSString *empty = [library stringByAppendingPathComponent:@"CallAssist/theme/empty"];
+    CHECK([fm createDirectoryAtPath:empty withIntermediateDirectories:YES attributes:nil error:nil]);
+    NSDictionary *sources = @{@"default.sources":Text(@"# keep exact bytes\nTypes: deb\nURIs: https://fixture.example/\nSuites: ./\n"),
+        @"procursus.sources":Text(@"fixture bootstrap bytes\n"), @"sileo.sources":[NSData data],
+        @"imported-SYNTHETIC.sources":Text(@"fixture user sources\n")};
+    for (NSString *name in sources) Put([apt stringByAppendingPathComponent:name], sources[name]);
+    Put([root stringByAppendingPathComponent:@"etc/apt/sources.list"], Text(@"outside selected folder"));
+    Put([library stringByAppendingPathComponent:@"Unrelated/keep"], Text(@"untouched"));
+    NSString *pref = [library stringByAppendingPathComponent:@"Preferences/com.apple.test.plist"];
+    CHECK(chmod(pref.fileSystemRepresentation, 0640) == 0);
+    CHECK([fm createDirectoryAtPath:store withIntermediateDirectories:YES attributes:nil error:nil]);
+    DOConfigurationBackupManager *m = [[DOConfigurationBackupManager alloc] initWithTestRoot:root];
+    NSError *e = nil; NSURL *folder = [NSURL fileURLWithPath:store];
+    NSURL *backup = [m createBackupInDirectory:folder error:&e];
+    if (!backup) NSLog(@"Folder backup: %@", e); CHECK(backup);
+    NSDictionary *archive = [m loadArchive:backup error:&e]; CHECK(archive);
+    CHECK([archive[@"version"] isEqual:@2]);
+    CHECK([archive[@"directories"] containsObject:@"config/CallAssist/theme/empty"]);
+    for (NSString *path in config) CHECK([archive[@"files"][[ @"config/" stringByAppendingString:path]] isEqual:config[path]]);
+    for (NSString *name in sources) CHECK([archive[@"files"][[ @"sources/sources.list.d/" stringByAppendingString:name]] isEqual:sources[name]]);
+    CHECK([m.lastBackupReport[@"skippedCount"] unsignedIntegerValue] == 0);
+    NSArray *roots = @[@"Preferences", @"ControlCenter", @"CallAssist", @"RootHide", @"CallAssistActivation", @"Snapper3"];
+    for (NSString *name in roots) Put([[library stringByAppendingPathComponent:name] stringByAppendingPathComponent:@"extra-after-backup"], Text(@"remove"));
+    Put([apt stringByAppendingPathComponent:@"extra.list"], Text(@"remove")); Put(pref, Plist(@"changed"));
+    CHECK([m restoreBackupAtURL:backup restorePreferences:YES restoreSources:NO error:&e]);
+    CHECK([fm fileExistsAtPath:[apt stringByAppendingPathComponent:@"extra.list"]]);
+    for (NSString *name in roots) CHECK(![fm fileExistsAtPath:[[library stringByAppendingPathComponent:name] stringByAppendingPathComponent:@"extra-after-backup"]]);
+    for (NSString *path in config) CHECK([[NSData dataWithContentsOfFile:[library stringByAppendingPathComponent:path]] isEqual:config[path]]);
+    struct stat st; CHECK(stat(pref.fileSystemRepresentation, &st) == 0 && (st.st_mode & 0777) == 0640);
+    CHECK([fm fileExistsAtPath:empty]);
+    Put(pref, Plist(@"keep unchecked category"));
+    CHECK([m restoreBackupAtURL:backup restorePreferences:NO restoreSources:YES error:&e]);
+    CHECK([[NSData dataWithContentsOfFile:pref] isEqual:Plist(@"keep unchecked category")]);
+    CHECK([[fm contentsOfDirectoryAtPath:apt error:nil] count] == sources.count);
+    for (NSString *name in sources) CHECK([[NSData dataWithContentsOfFile:[apt stringByAppendingPathComponent:name]] isEqual:sources[name]]);
+    CHECK([[NSData dataWithContentsOfFile:[root stringByAppendingPathComponent:@"etc/apt/sources.list"]] isEqual:Text(@"outside selected folder")]);
+    CHECK([[NSData dataWithContentsOfFile:[library stringByAppendingPathComponent:@"Unrelated/keep"]] isEqual:Text(@"untouched")]);
+    // Fail after the first directory swap; all original trees and their metadata survive.
+    for (NSString *name in roots) Put([[library stringByAppendingPathComponent:name] stringByAppendingPathComponent:@"before-failure"], Text(name));
+    NSDictionary *before = [m snapshot:root error:&e]; CHECK(before);
+    m.failAfterWrites = 1;
+    CHECK(![m restoreBackupAtURL:backup restorePreferences:YES restoreSources:YES error:&e]);
+    NSDictionary *after = [m snapshot:root error:&e]; CHECK(after);
+    CHECK([before[@"files"] isEqual:after[@"files"]]); CHECK([before[@"metadata"] isEqual:after[@"metadata"]]);
+    CHECK([before[@"directories"] isEqual:after[@"directories"]]); m.failAfterWrites = -1;
+    // Missing live directories are recreated; a saved empty directory removes stale contents.
+    CHECK([fm removeItemAtPath:[library stringByAppendingPathComponent:@"Snapper3"] error:nil]);
+    CHECK([m restoreBackupAtURL:backup restorePreferences:YES restoreSources:YES error:&e]);
+    CHECK([[NSData dataWithContentsOfFile:[library stringByAppendingPathComponent:@"Snapper3/license"]] isEqual:config[@"Snapper3/license"]]);
+    // Directory absence is not an empty-directory instruction.
+    CHECK([fm removeItemAtPath:[library stringByAppendingPathComponent:@"ControlCenter"] error:nil]);
+    NSURL *missing = [m createBackupInDirectory:folder error:&e]; CHECK(missing);
+    Put([library stringByAppendingPathComponent:@"ControlCenter/keep"], Text(@"not in backup"));
+    CHECK([m restoreBackupAtURL:missing restorePreferences:YES restoreSources:NO error:&e]);
+    CHECK([fm fileExistsAtPath:[library stringByAppendingPathComponent:@"ControlCenter/keep"]]);
+    CHECK([fm removeItemAtPath:[library stringByAppendingPathComponent:@"ControlCenter"] error:nil]);
+    CHECK([fm createDirectoryAtPath:[library stringByAppendingPathComponent:@"ControlCenter"] withIntermediateDirectories:YES attributes:nil error:nil]);
+    NSURL *emptyBackup = [m createBackupInDirectory:folder error:&e]; CHECK(emptyBackup);
+    Put([library stringByAppendingPathComponent:@"ControlCenter/remove"], Text(@"stale"));
+    CHECK([m restoreBackupAtURL:emptyBackup restorePreferences:YES restoreSources:NO error:&e]);
+    CHECK([[fm contentsOfDirectoryAtPath:[library stringByAppendingPathComponent:@"ControlCenter"] error:nil] count] == 0);
+    // A version-1 partial backup must never wipe a complete live directory.
+    NSString *manifestPath = [backup.path stringByAppendingPathComponent:@"manifest.json"];
+    NSData *manifest = [NSData dataWithContentsOfFile:manifestPath];
+    NSMutableDictionary *json = [[NSJSONSerialization JSONObjectWithData:manifest options:NSJSONReadingMutableContainers error:nil] mutableCopy];
+    json[@"version"] = @1; Put(manifestPath, [NSJSONSerialization dataWithJSONObject:json options:0 error:nil]);
+    CHECK(![m restoreBackupAtURL:backup restorePreferences:YES restoreSources:YES error:&e]);
+    CHECK([e.localizedDescription containsString:@"version 2"]); Put(manifestPath, manifest);
+    // Links/traversal and unlisted files fail before touching any live folder.
+    NSString *archived = [backup.path stringByAppendingPathComponent:@"config/Preferences/com.apple.test.plist"];
+    NSData *saved = [NSData dataWithContentsOfFile:archived];
+    CHECK([fm removeItemAtPath:archived error:nil]); CHECK(symlink(pref.fileSystemRepresentation, archived.fileSystemRepresentation) == 0);
+    CHECK(![m restoreBackupAtURL:backup restorePreferences:YES restoreSources:YES error:&e]);
+    CHECK([fm removeItemAtPath:archived error:nil]); Put(archived, saved);
+    CHECK([fm removeItemAtPath:archived error:nil]); CHECK(link(pref.fileSystemRepresentation, archived.fileSystemRepresentation) == 0);
+    CHECK(![m loadArchive:backup error:&e]);
+    CHECK([fm removeItemAtPath:archived error:nil]); Put(archived, saved);
+    json = [[NSJSONSerialization JSONObjectWithData:manifest options:NSJSONReadingMutableContainers error:nil] mutableCopy];
+    json[@"files"] = @[@"../outside"]; Put(manifestPath, [NSJSONSerialization dataWithJSONObject:json options:0 error:nil]);
+    CHECK(![m loadArchive:backup error:&e]); Put(manifestPath, manifest);
+    json = [[NSJSONSerialization JSONObjectWithData:manifest options:NSJSONReadingMutableContainers error:nil] mutableCopy];
+    [json[@"metadata"] removeObjectForKey:@"config/Preferences"];
+    Put(manifestPath, [NSJSONSerialization dataWithJSONObject:json options:0 error:nil]);
+    CHECK(![m loadArchive:backup error:&e]); Put(manifestPath, manifest);
+    json = [[NSJSONSerialization JSONObjectWithData:manifest options:NSJSONReadingMutableContainers error:nil] mutableCopy];
+    json[@"directories"] = @[@"config/Preferences/../Other"];
+    Put(manifestPath, [NSJSONSerialization dataWithJSONObject:json options:0 error:nil]);
+    CHECK(![m loadArchive:backup error:&e]); Put(manifestPath, manifest);
+    NSString *extra = [backup.path stringByAppendingPathComponent:@"config/Preferences/unlisted"];
+    Put(extra, Text(@"unexpected")); CHECK(![m loadArchive:backup error:&e]); CHECK([fm removeItemAtPath:extra error:nil]);
+    CHECK([fm removeItemAtPath:pref error:nil]); CHECK(symlink(archived.fileSystemRepresentation, pref.fileSystemRepresentation) == 0);
+    CHECK(![m restoreBackupAtURL:backup restorePreferences:YES restoreSources:YES error:&e]);
+    CHECK([fm removeItemAtPath:pref error:nil]); Put(pref, saved);
+    CHECK(![m restoreBackupAtURL:backup restorePreferences:NO restoreSources:NO error:&e]);
+    // Only the fixed runtime /var anchor may resolve through RootHide's secondary root.
+    NSString *secondary = [temp stringByAppendingPathComponent:@"secondary"];
+    CHECK([fm createDirectoryAtPath:secondary withIntermediateDirectories:YES attributes:nil error:nil]);
+    CHECK([fm moveItemAtPath:[root stringByAppendingPathComponent:@"var"] toPath:[secondary stringByAppendingPathComponent:@"var"] error:&e]);
+    CHECK(symlink([secondary stringByAppendingPathComponent:@"var"].fileSystemRepresentation, [root stringByAppendingPathComponent:@"var"].fileSystemRepresentation) == 0);
+    CHECK([m createBackupInDirectory:folder error:&e]);
+    NSString *blank = [temp stringByAppendingPathComponent:@"blank-root"];
+    CHECK([fm createDirectoryAtPath:[blank stringByAppendingPathComponent:@"var/mobile/Library"] withIntermediateDirectories:YES attributes:nil error:nil]);
+    CHECK([fm createDirectoryAtPath:[blank stringByAppendingPathComponent:@"etc/apt"] withIntermediateDirectories:YES attributes:nil error:nil]);
+    DOConfigurationBackupManager *emptyManager = [[DOConfigurationBackupManager alloc] initWithTestRoot:blank];
+    CHECK(![emptyManager createBackupInDirectory:folder error:&e]);
+    CHECK([fm removeItemAtPath:temp error:nil]);
 }

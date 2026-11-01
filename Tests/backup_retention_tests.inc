@@ -236,11 +236,11 @@ static void RestoreSummaryTests(void) {
     NSDictionary *archive = [m loadArchive:backup error:&e];
     CHECK(archive);
     NSUInteger bytes = 0;
-    for (NSData *data in archive.allValues) bytes += data.length;
+    for (NSData *data in [archive[@"files"] allValues]) bytes += data.length;
     NSDictionary *summary = [m summaryForBackupAtURL:backup error:&e];
     if (!summary) NSLog(@"Summary: %@", e);
     CHECK(summary);
-    CHECK([summary[@"files"] unsignedIntegerValue] == archive.count);
+    CHECK([summary[@"files"] unsignedIntegerValue] == [archive[@"files"] count]);
     CHECK([summary[@"size"] unsignedIntegerValue] == bytes);
     CHECK([summary[@"skipped"] unsignedIntegerValue] == skipped);
     CHECK([summary[@"created"] isKindOfClass:NSDate.class]);
@@ -251,9 +251,9 @@ static void RestoreSummaryTests(void) {
     NSArray *rows = [m backupSummariesInDirectory:folder error:&e];
     CHECK(rows.count == 1);
     CHECK([[rows[0][@"url"] lastPathComponent] isEqual:backup.lastPathComponent]);
-    CHECK([rows[0][@"files"] unsignedIntegerValue] == archive.count);
+    CHECK([rows[0][@"files"] unsignedIntegerValue] == [archive[@"files"] count]);
     CHECK([rows[0][@"size"] unsignedIntegerValue] == bytes);
-    // Legacy archives report restorable files, their bytes and the ignored rest.
+    // Legacy archives stay visible, but their partial contents cannot replace whole folders.
     NSString *legacy = [store stringByAppendingPathComponent:@"legacy"];
     NSData *kept = Plist(@"legacy");
     Put([legacy stringByAppendingPathComponent:@"插件配置备份/Library/Preferences/org.example.anytweak.plist"], kept);
@@ -267,10 +267,10 @@ static void RestoreSummaryTests(void) {
     NSDictionary *legacyLoaded = [m loadArchive:legacyURL error:&e];
     CHECK(legacyLoaded);
     NSUInteger legacyBytes = 0;
-    for (NSData *data in legacyLoaded.allValues) legacyBytes += data.length;
-    CHECK([legacySummary[@"files"] unsignedIntegerValue] == legacyLoaded.count && legacyLoaded.count == 2);
-    CHECK([legacySummary[@"size"] unsignedIntegerValue] == legacyBytes && legacyBytes == kept.length + sources.length);
-    CHECK([legacySummary[@"skipped"] unsignedIntegerValue] == 1);
+    for (NSData *data in [legacyLoaded[@"files"] allValues]) legacyBytes += data.length;
+    CHECK([legacySummary[@"files"] unsignedIntegerValue] == [legacyLoaded[@"files"] count] && [legacyLoaded[@"files"] count] == 3);
+    CHECK([legacySummary[@"size"] unsignedIntegerValue] == legacyBytes && legacyBytes == kept.length + sources.length + Plist(@"never").length);
+    CHECK([legacySummary[@"skipped"] unsignedIntegerValue] == 0);
     CHECK([legacySummary[@"legacy"] boolValue]);
     CHECK([legacySummary[@"created"] isKindOfClass:NSDate.class]);
     rows = [m backupSummariesInDirectory:folder error:&e];
@@ -278,7 +278,7 @@ static void RestoreSummaryTests(void) {
     BOOL listed = NO;
     for (NSDictionary *row in rows) if ([[row[@"url"] lastPathComponent] isEqual:backup.lastPathComponent]) {
         listed = YES;
-        CHECK([row[@"files"] unsignedIntegerValue] == archive.count && [row[@"size"] unsignedIntegerValue] == bytes);
+        CHECK([row[@"files"] unsignedIntegerValue] == [archive[@"files"] count] && [row[@"size"] unsignedIntegerValue] == bytes);
     }
     CHECK(listed);
     // A folder that is not a backup has no summary at all.

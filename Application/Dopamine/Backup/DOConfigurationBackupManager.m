@@ -1,5 +1,4 @@
 #import "DOConfigurationBackupManager.h"
-#import "DOSourceMigration.h"
 #ifndef DO_BACKUP_TESTING
 #import "DOEnvironmentManager.h"
 #import <libjailbreak/info.h>
@@ -15,64 +14,27 @@
 #import <dispatch/dispatch.h>
 
 #import "DOBackupFileIO.h"
-static BOOL BPreferenceName(NSString *name) {
-    if (!BPath(name) || name.pathComponents.count != 1 || ![name.pathExtension isEqual:@"plist"] || [name hasPrefix:@"."]) return NO;
-    NSString *lower = name.lowercaseString;
-    for (NSString *prefix in @[@"com.apple.", @"cn.zqbb.doparh", @"apple", @"global", @"system", @"com.opa334.dopamine", @"com.roothide.dopamine", @"cn.roothide.dopamine", @"com.xina."])
-        if ([lower hasPrefix:prefix]) return NO;
-    for (NSString *word in @[@"keychain", @"credential", @"password", @"token", @"device", @"activation", @"networkidentification", @"bluetooth", @"wifi", @"mobilegestalt"])
-        if ([lower containsString:word]) return NO;
-    return YES;
+// Only these seven folders can ever be backed up or replaced.
+static NSArray<NSString *> *BBackupFolders(void) {
+    return @[@"config/Preferences", @"config/ControlCenter", @"config/CallAssist",
+             @"config/RootHide", @"config/CallAssistActivation", @"config/Snapper3", @"sources/sources.list.d"];
 }
-static NSArray<NSString *> *BRootHideNames(void) {
-    // Never include cn.zqbb.inject.system.plist or arbitrary RootHide databases.
-    return @[@"RootHideConfig.plist", @"cn.zqbb.inject.plist", @"cn.zqbb.inject.wantsblacklist.plist", @"cn.zqbb.jetsam.addend.plist"];
+static NSString *BFolderForPath(NSString *path) {
+    if (BPath(path)) for (NSString *folder in BBackupFolders()) if (BUnder(path, folder)) return folder;
+    return nil;
 }
-static BOOL BSecret(id object) {
-    if ([object isKindOfClass:NSDictionary.class]) {
-        for (id key in object) {
-            if (![key isKindOfClass:NSString.class]) return YES;
-            NSString *s = [key lowercaseString];
-            for (NSString *word in @[@"token", @"password", @"secret", @"credential", @"apikey", @"api_key", @"privatekey", @"authorization", @"cookie", @"deviceid", @"udid", @"serialnumber"])
-                if ([s containsString:word]) return YES;
-            if (BSecret(object[key])) return YES;
-        }
-    } else if ([object isKindOfClass:NSArray.class]) { for (id value in object) if (BSecret(value)) return YES; }
-    return NO;
+static NSDictionary *BMetadata(struct stat st) {
+    return @{@"mode":@(st.st_mode & 0777), @"uid":@(st.st_uid), @"gid":@(st.st_gid),
+             @"seconds":@(st.st_mtimespec.tv_sec), @"nanoseconds":@(st.st_mtimespec.tv_nsec)};
 }
-static NSArray<NSString *> *BAdditionalConfigPaths(void) {
-    return @[@"ControlCenter/ModuleConfiguration_CCSupport.plist", @"CallAssistActivation/Activation.plist", @"Snapper3/license"];
-}
-static BOOL BConfigPath(NSString *path) {
-    if (!BPath(path)) return NO;
-    NSArray *parts = path.pathComponents;
-    return [BAdditionalConfigPaths() containsObject:path] || (parts.count == 2 && (([parts[0] isEqual:@"Preferences"] && BPreferenceName(parts[1])) || ([parts[0] isEqual:@"RootHide"] && [BRootHideNames() containsObject:parts[1]])));
-}
-static BOOL BConfig(NSString *path, NSData *data, NSError **error) {
-    if (!BConfigPath(path)) return BFail(error, @"Configuration is not on the explicit allowlist");
-    // Only these exact, user-authorized license paths may carry device/authorization data.
-    if ([path isEqual:@"Snapper3/license"])
-        return (data.length > 0 && data.length <= 64 * 1024) || BFail(error, @"Snapper3 license must contain 1 to 65536 bytes");
-    id plist = [NSPropertyListSerialization propertyListWithData:data options:NSPropertyListImmutable format:NULL error:error];
-    BOOL authorized = [path isEqual:@"CallAssistActivation/Activation.plist"];
-    return ([plist isKindOfClass:NSDictionary.class] && (authorized || !BSecret(plist))) || BFail(error, @"Configuration must be a dictionary plist without credential/device keys except the explicitly authorized activation file");
-}
-static NSArray<NSString *> *BSourceUnits(NSString *text, BOOL deb822) {
-    NSMutableArray *units = [NSMutableArray array];
-    if (deb822) {
-        NSMutableArray *block = [NSMutableArray array];
-        for (NSString *line in [[text stringByAppendingString:@"\n"] componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
-            NSString *trim = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
-            if (!trim.length) { if (block.count) { [units addObject:[block componentsJoinedByString:@"\n"]]; [block removeAllObjects]; } }
-            else if (![trim hasPrefix:@"#"]) [block addObject:line];
-        }
-    } else {
-        for (NSString *line in [text componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
-            NSString *trim = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
-            if (trim.length && ![trim hasPrefix:@"#"]) [units addObject:trim];
-        }
-    }
-    return units;
+static struct stat BStat(NSDictionary *metadata) {
+    struct stat st = {0};
+    st.st_mode = [metadata[@"mode"] unsignedIntValue]; st.st_uid = [metadata[@"uid"] unsignedIntValue];
+    st.st_gid = [metadata[@"gid"] unsignedIntValue];
+    st.st_mtimespec.tv_sec = [metadata[@"seconds"] longLongValue];
+    st.st_mtimespec.tv_nsec = [metadata[@"nanoseconds"] longValue];
+    st.st_atimespec = st.st_mtimespec;
+    return st;
 }
 
 // Backups are user-visible in Files/Filza, so the name carries the creation time.
@@ -255,7 +217,7 @@ static BOOL BRemoveVerifiedTree(int parent, NSString *name, NSError **error) {
         if ([name isEqual:@"."] || [name isEqual:@".."]) continue;
         NSString *relative = [prefix stringByAppendingPathComponent:name ?: @""];
         struct stat st;
-        if (!name || !BPath(relative) || relative.pathComponents.count > 8 || fstatat(fd, entry->d_name, &st, AT_SYMLINK_NOFOLLOW)) { ok = BFail(error, @"Invalid archive path"); break; }
+        if (!name || !BPath(relative) || relative.pathComponents.count > 32 || fstatat(fd, entry->d_name, &st, AT_SYMLINK_NOFOLLOW)) { ok = BFail(error, @"Invalid archive path"); break; }
         if (S_ISDIR(st.st_mode)) {
             if (files.count >= BMaxFiles) { ok = BFail(error, @"Too many backup entries"); break; }
             // Count directories too, so empty-directory bombs are bounded.
@@ -270,78 +232,56 @@ static BOOL BRemoveVerifiedTree(int parent, NSString *name, NSError **error) {
     closedir(stream);
     return ok;
 }
-- (NSArray<NSString *> *)namesAt:(int)base directory:(NSString *)relative error:(NSError **)error {
-    int fd = BParent(base, [relative stringByAppendingPathComponent:@".entry"], NO, 0, 0, nil);
-    if (fd < 0) { if (errno == ENOENT) return @[]; BFail(error, @"Unsafe configuration directory"); return nil; }
-    DIR *stream = fdopendir(fd);
-    if (!stream) { close(fd); BFail(error, @"Cannot enumerate configuration directory"); return nil; }
-    NSMutableArray *names = [NSMutableArray array]; struct dirent *entry; BOOL ok = YES;
-    while ((entry = readdir(stream))) {
-        NSString *name = [NSString stringWithUTF8String:entry->d_name];
-        if ([name isEqual:@"."] || [name isEqual:@".."]) continue;
-        if (!name || !BPath(name) || names.count >= BMaxFiles) { ok = BFail(error, @"Configuration directory entry limit or invalid filename"); break; }
-        [names addObject:name];
-    }
-    closedir(stream);
-    return ok ? [names sortedArrayUsingSelector:@selector(compare:)] : nil;
-}
-- (NSDictionary<NSString *, NSData *> *)snapshot:(NSString *)root error:(NSError **)error {
-    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+- (NSDictionary *)snapshot:(NSString *)root error:(NSError **)error {
     NSString *library = [self anchor:@"config" root:root error:error], *apt = [self anchor:@"sources" root:root error:error];
     if (!library || !apt) return nil;
-    int lfd = BOpenDirectory(library), afd = BOpenDirectory(apt);
-    if (lfd < 0 || afd < 0) { if (lfd >= 0) close(lfd); if (afd >= 0) close(afd); BFail(error, @"Cannot open runtime anchors"); return nil; }
-    NSArray *preferences = [self namesAt:lfd directory:@"Preferences" error:error];
-    NSArray *rootHide = [self namesAt:lfd directory:@"RootHide" error:error];
-    BOOL ok = preferences != nil && rootHide != nil;
-    NSMutableArray *skipped = [NSMutableArray array];
-    NSMutableArray *configPaths = [NSMutableArray arrayWithArray:BAdditionalConfigPaths()];
-    for (NSString *name in preferences) {
-        NSString *path = [@"Preferences" stringByAppendingPathComponent:name];
-        if (BPreferenceName(name)) [configPaths addObject:path];
-        else [skipped addObject:@{@"path":path, @"reason":@"excluded-system-control-credential-or-unsupported-name"}];
-    }
-    for (NSString *name in BRootHideNames()) [configPaths addObject:[@"RootHide" stringByAppendingPathComponent:name]];
-    for (NSString *path in configPaths) {
-        if (!ok) break;
-        BOOL missing; NSError *readError = nil;
-        NSData *data = BRead(lfd, path, NULL, &missing, &readError);
-        if (missing) continue;
-        NSError *configError = nil;
-        if (!data || !BConfig(path, data, &configError)) {
-            [skipped addObject:@{@"path":path, @"reason":data ? @"invalid-format-size-or-sensitive-content" : @"unsafe-link-unreadable-special-or-oversized"}]; continue;
+    int configFD = BOpenDirectory(library), aptFD = BOpenDirectory(apt);
+    if (configFD < 0 || aptFD < 0) { if (configFD >= 0) close(configFD); if (aptFD >= 0) close(aptFD); BFail(error, @"Cannot open runtime anchors"); return nil; }
+    NSMutableArray *entries = [NSMutableArray array], *skipped = [NSMutableArray array], *directories = [NSMutableArray array];
+    NSMutableDictionary *files = [NSMutableDictionary dictionary], *metadata = [NSMutableDictionary dictionary];
+    NSUInteger bytes = 0, readBytes = 0; BOOL ok = YES;
+    for (NSString *folder in BBackupFolders()) {
+        BOOL config = [folder hasPrefix:@"config/"];
+        int base = config ? configFD : aptFD;
+        NSString *relative = folder.lastPathComponent;
+        struct stat st;
+        if (fstatat(base, relative.fileSystemRepresentation, &st, AT_SYMLINK_NOFOLLOW)) {
+            if (errno == ENOENT) { [skipped addObject:@{@"path":folder, @"reason":@"folder-not-present"}]; continue; }
+            ok = BFail(error, @"Cannot inspect a backup folder"); break;
         }
-        result[[@"config" stringByAppendingPathComponent:path]] = data;
+        if (!S_ISDIR(st.st_mode)) { ok = BFail(error, @"Backup roots must be real directories, not links"); break; }
+        [entries addObject:@{@"directory":folder}];
+        NSString *path = [(config ? library : apt) stringByAppendingPathComponent:relative];
+        if (![self walk:path prefix:folder files:entries bytes:&bytes error:error]) { ok = NO; break; }
     }
-    NSMutableArray *sourcePaths = [NSMutableArray arrayWithObject:@"sources.list"];
-    NSString *listDir = [apt stringByAppendingPathComponent:@"sources.list.d"];
-    struct stat listStat;
-    if (ok && !lstat(listDir.fileSystemRepresentation, &listStat)) {
-        NSMutableArray *entries = [NSMutableArray array]; NSUInteger bytes = 0;
-        ok = [self walk:listDir prefix:@"sources.list.d" files:entries bytes:&bytes error:error];
-        for (NSDictionary *entry in entries) if (entry[@"file"] && [entry[@"file"] pathComponents].count == 2) [sourcePaths addObject:entry[@"file"]];
-    }
-    for (NSString *path in sourcePaths) {
+    for (NSDictionary *entry in entries) {
         if (!ok) break;
-        NSString *ext = path.pathExtension;
-        if (![ext isEqual:@"list"] && ![ext isEqual:@"sources"]) continue;
-        BOOL missing; NSData *data = BRead(afd, path, NULL, &missing, error);
-        if (!data && !missing) { ok = NO; break; }
-        if (!data) continue;
-        NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-        NSString *clean = text ? [DOSourceMigration sanitizedSourceText:text deb822:[ext isEqual:@"sources"] error:error] : nil;
-        if (!clean) { ok = BFail(error, @"Invalid UTF-8/APT source text"); break; }
-        result[[@"sources" stringByAppendingPathComponent:path]] = [clean dataUsingEncoding:NSUTF8StringEncoding];
+        NSString *path = entry[@"file"] ?: entry[@"directory"];
+        BOOL config = [path hasPrefix:@"config/"];
+        int base = config ? configFD : aptFD;
+        NSString *relative = [path substringFromIndex:config ? 7 : 8];
+        struct stat st;
+        if (entry[@"file"]) {
+            NSData *data = BRead(base, relative, &st, NULL, error);
+            if (!data) { ok = NO; break; }
+            readBytes += data.length;
+            if (readBytes > BMaxTotal) { ok = BFail(error, @"Backup size limit exceeded"); break; }
+            files[path] = data;
+        } else {
+            int fd = BParent(base, [relative stringByAppendingPathComponent:@".entry"], NO, 0, 0, nil);
+            if (fd < 0 || fstat(fd, &st)) { if (fd >= 0) close(fd); ok = BFail(error, @"Backup directory changed"); break; }
+            close(fd); [directories addObject:path];
+        }
+        metadata[path] = BMetadata(st);
     }
-    close(lfd); close(afd);
-    NSUInteger total = 0; for (NSData *data in result.allValues) total += data.length;
-    if (result.count > BMaxFiles || total > BMaxTotal) { BFail(error, @"Snapshot exceeds backup limits"); return nil; }
-    for (NSString *name in rootHide) if (![BRootHideNames() containsObject:name])
-        [skipped addObject:@{@"path":[@"RootHide" stringByAppendingPathComponent:name], @"reason":@"generated-or-unsupported-roothide-data"}];
-    self.lastBackupReport = @{@"included":@(result.count), @"skippedCount":@(skipped.count), @"skipped":skipped};
-    return ok ? result : nil;
+    close(configFD); close(aptFD);
+    // Reserve room for the manifest and category directories in the archive.
+    if (entries.count + 16 > BMaxFiles) ok = BFail(error, @"Too many backup entries");
+    self.lastBackupReport = @{@"included":@(files.count), @"skippedCount":@(skipped.count), @"skipped":skipped};
+    return ok ? @{@"version":@2, @"files":files, @"directories":[directories sortedArrayUsingSelector:@selector(compare:)], @"metadata":metadata} : nil;
 }
-- (NSURL *)writeSnapshot:(NSDictionary<NSString *, NSData *> *)snapshot directory:(NSURL *)directory safety:(BOOL)safety error:(NSError **)error {
+
+- (NSURL *)writeSnapshot:(NSDictionary *)snapshot directory:(NSURL *)directory safety:(BOOL)safety error:(NSError **)error {
     if (![self validateStorageDirectory:directory error:error]) return nil;
     int base = BOpenDirectory(BCanonical(directory.path));
     if (base < 0) { BFail(error, @"Storage folder became unavailable"); return nil; }
@@ -353,11 +293,20 @@ static BOOL BRemoveVerifiedTree(int parent, NSString *name, NSError **error) {
     int fd = ok ? openat(base, stage.fileSystemRepresentation, O_RDONLY | O_DIRECTORY | O_NOFOLLOW) : -1;
     struct stat mode = {0}; mode.st_mode = 0600; mode.st_uid = getuid(); mode.st_gid = getgid();
     NSMutableArray *created = [NSMutableArray array];
-    NSArray *paths = [snapshot.allKeys sortedArrayUsingSelector:@selector(compare:)];
-    for (NSString *path in paths) if (ok) ok = BWrite(fd, path, snapshot[path], mode, -1, created, error);
-    NSDictionary *manifest = @{@"format":@"org.roothide.configuration-backup", @"version":@1, @"files":paths,
+    NSDictionary *files = snapshot[@"files"];
+    NSArray *paths = [files.allKeys sortedArrayUsingSelector:@selector(compare:)];
+    for (NSString *path in snapshot[@"directories"]) if (ok) {
+        int dir = BParent(fd, [path stringByAppendingPathComponent:@".entry"], YES, getuid(), getgid(), created);
+        ok = dir >= 0; if (dir >= 0) close(dir);
+    }
+    for (NSString *path in paths) if (ok) ok = BWrite(fd, path, files[path], mode, -1, created, error);
+    NSDictionary *manifest = @{@"format":@"org.roothide.configuration-backup", @"version":@2, @"files":paths,
+                              @"directories":snapshot[@"directories"], @"metadata":snapshot[@"metadata"],
                               @"created":@([[NSDate date] timeIntervalSince1970]), @"safety":@(safety), @"report":self.lastBackupReport ?: @{}};
     NSData *json = [NSJSONSerialization dataWithJSONObject:manifest options:NSJSONWritingPrettyPrinted error:error];
+    NSUInteger total = json.length;
+    for (NSData *data in files.allValues) total += data.length;
+    if (total > BMaxTotal) ok = BFail(error, @"Backup including manifest exceeds size limit");
     if (ok) ok = json && BWrite(fd, @"manifest.json", json, mode, -1, created, error);
     if (fd >= 0) { if (ok) ok = !fsync(fd); close(fd); }
     if (ok) ok = !renameat(base, stage.fileSystemRepresentation, base, name.fileSystemRepresentation);
@@ -374,223 +323,196 @@ static BOOL BRemoveVerifiedTree(int parent, NSString *name, NSError **error) {
     [BLock lock]; @try {
         __block NSDictionary *snapshot = nil;
         if (![self protected:^BOOL(NSError **e) { NSString *root = [self runtimeRoot:e]; if (root) snapshot = [self snapshot:root error:e]; return snapshot != nil; } error:error]) return nil;
+        if (![snapshot[@"directories"] count]) { BFail(error, @"None of the requested backup folders were found"); return nil; }
         __block NSURL *result = nil;
         [self coordinate:directory writing:YES block:^BOOL(NSURL *actual, NSError **e) { result = [self writeSnapshot:snapshot directory:actual safety:NO error:e]; return result != nil; } error:error];
         return result;
     } @finally { [BLock unlock]; }
 }
-- (NSDictionary<NSString *, NSData *> *)loadArchive:(NSURL *)url error:(NSError **)error {
+- (NSDictionary *)loadArchive:(NSURL *)url error:(NSError **)error {
     if (![self validateStorageDirectory:url.URLByDeletingLastPathComponent error:error]) return nil;
-    NSString *path = url.path;
-    if (!url.isFileURL || ![BCanonical(path) isEqual:[BCanonical(url.URLByDeletingLastPathComponent.path) stringByAppendingPathComponent:url.lastPathComponent]]) { BFail(error, @"Archive folder symlink rejected"); return nil; }
+    NSString *path = BCanonical(url.path);
+    if (!url.isFileURL || ![path isEqual:[BCanonical(url.URLByDeletingLastPathComponent.path) stringByAppendingPathComponent:url.lastPathComponent]]) { BFail(error, @"Archive folder symlink rejected"); return nil; }
     NSMutableArray *entries = [NSMutableArray array]; NSUInteger bytes = 0;
-    if (![self walk:BCanonical(path) prefix:@"" files:entries bytes:&bytes error:error]) return nil;
-    int fd = BOpenDirectory(BCanonical(path)); if (fd < 0) return nil;
-    BOOL absent; NSData *manifestData = BRead(fd, @"manifest.json", NULL, &absent, error);
-    NSDictionary *manifest = nil; NSSet *declared = nil;
-    BOOL ok = absent || manifestData != nil;
-    if (manifestData) {
-        id object = [NSJSONSerialization JSONObjectWithData:manifestData options:0 error:error];
-        if (![object isKindOfClass:NSDictionary.class] || ![object[@"format"] isEqual:@"org.roothide.configuration-backup"] || ![object[@"version"] isEqual:@1] || ![object[@"files"] isKindOfClass:NSArray.class]) ok = BFail(error, @"Unsupported backup manifest");
-        else {
-            manifest = object;
-            for (id file in manifest[@"files"]) if (!BPath(file)) { ok = BFail(error, @"Invalid manifest filename"); break; }
-            if (ok) { declared = [NSSet setWithArray:manifest[@"files"]]; if (declared.count != [manifest[@"files"] count]) ok = BFail(error, @"Duplicate manifest paths"); }
-        }
-    }
-    NSMutableDictionary *result = [NSMutableDictionary dictionary]; NSMutableSet *seen = [NSMutableSet set];
+    if (![self walk:path prefix:@"" files:entries bytes:&bytes error:error]) return nil;
+    int fd = BOpenDirectory(path); if (fd < 0) return nil;
+    BOOL absent = NO; NSData *json = BRead(fd, @"manifest.json", NULL, &absent, error);
+    id manifest = json ? [NSJSONSerialization JSONObjectWithData:json options:0 error:error] : nil;
+    BOOL ok = absent || (json && [manifest isKindOfClass:NSDictionary.class] &&
+        [manifest[@"format"] isEqual:@"org.roothide.configuration-backup"] &&
+        ( [manifest[@"version"] isEqual:@1] || [manifest[@"version"] isEqual:@2]) && [manifest[@"files"] isKindOfClass:NSArray.class]);
+    BOOL complete = ok && [manifest[@"version"] isEqual:@2];
+    NSArray *directories = complete ? manifest[@"directories"] : @[];
+    NSDictionary *metadata = complete ? manifest[@"metadata"] : @{};
+    NSSet *declared = manifest ? [NSSet setWithArray:ok ? manifest[@"files"] : @[]] : nil;
+    if (complete && (![directories isKindOfClass:NSArray.class] || ![metadata isKindOfClass:NSDictionary.class])) ok = NO;
+    NSMutableDictionary *files = [NSMutableDictionary dictionary]; NSMutableSet *seen = [NSMutableSet set], *actualDirectories = [NSMutableSet set];
+    NSUInteger readBytes = json.length;
+    if (ok && manifest) for (id file in manifest[@"files"]) if (!BPath(file)) { ok = NO; break; }
+    if (ok && manifest && declared.count != [manifest[@"files"] count]) ok = NO;
+    if (ok && complete) for (id directory in directories) if (!BFolderForPath(directory)) { ok = NO; break; }
+    if (ok && complete && [NSSet setWithArray:directories].count != directories.count) ok = NO;
     for (NSDictionary *entry in entries) {
         if (!ok) break;
-        NSString *file = entry[@"file"]; if (!file || [file isEqual:@"manifest.json"]) continue;
+        NSString *file = entry[@"file"], *directory = entry[@"directory"];
+        if (directory) {
+            if (complete && ![directory isEqual:@"config"] && ![directory isEqual:@"sources"]) [actualDirectories addObject:directory];
+            continue;
+        }
+        if ([file isEqual:@"manifest.json"]) continue;
         NSString *mapped = nil;
         if (manifest) {
-            if (![declared containsObject:file]) { ok = BFail(error, @"Unlisted archive file"); break; }
+            if (![declared containsObject:file]) { ok = NO; break; }
             [seen addObject:file]; mapped = file;
         } else if ([file hasPrefix:@"插件配置备份/Library/"]) {
-            NSString *config = [file substringFromIndex:[@"插件配置备份/Library/" length]];
-            if (BConfigPath(config)) mapped = [@"config" stringByAppendingPathComponent:config];
-            // Legacy scripts copied whole Library: unallowlisted data is never restored.
-        } else if ([file hasPrefix:@"源地址备份/"] && ( [file.pathExtension isEqual:@"list"] || [file.pathExtension isEqual:@"sources"])) {
+            mapped = [@"config" stringByAppendingPathComponent:[file substringFromIndex:[@"插件配置备份/Library/" length]]];
+        } else if ([file hasPrefix:@"源地址备份/"] && file.pathComponents.count == 2) {
             mapped = [@"sources/sources.list.d" stringByAppendingPathComponent:file.lastPathComponent];
-        } else if (manifest) { ok = NO; }
-        if (!mapped) continue;
-        NSData *data = BRead(fd, file, NULL, NULL, error); if (!data) { ok = NO; break; }
-        if ([mapped hasPrefix:@"config/"]) ok = BConfig([mapped substringFromIndex:7], data, error);
-        else if ([mapped hasPrefix:@"sources/"]) {
-            NSString *relative = [mapped substringFromIndex:8]; NSArray *parts = relative.pathComponents;
-            BOOL valid = [relative isEqual:@"sources.list"] || (parts.count == 2 && [parts[0] isEqual:@"sources.list.d"] && ([relative.pathExtension isEqual:@"list"] || [relative.pathExtension isEqual:@"sources"]));
-            NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-            NSString *clean = valid && text ? [DOSourceMigration sanitizedSourceText:text deb822:[relative.pathExtension isEqual:@"sources"] error:error] : nil;
-            ok = clean != nil; if (ok) data = [clean dataUsingEncoding:NSUTF8StringEncoding]; else BFail(error, @"Invalid source entry");
-        } else ok = BFail(error, @"Unexpected archive destination");
-        if (ok && result[mapped]) ok = BFail(error, @"Duplicate legacy archive destination");
-        if (ok) result[mapped] = data;
-    }
-    if (ok && manifest && ![seen isEqual:declared]) ok = BFail(error, @"Manifest references missing files");
-    if (ok && !manifest && !result.count) ok = BFail(error, @"Unrecognized or empty legacy backup");
-    close(fd); return ok ? result : nil;
-}
-- (NSString *)sourceKey:(NSString *)unit deb822:(BOOL)deb822 {
-    NSMutableDictionary *fields = [NSMutableDictionary dictionary];
-    NSString *(^words)(NSString *) = ^NSString *(NSString *value) {
-        return [[[value componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceCharacterSet] filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"length > 0"]] componentsJoinedByString:@" "];
-    };
-    if (deb822) {
-        NSString *last = nil;
-        for (NSString *line in [unit componentsSeparatedByString:@"\n"]) {
-            if ([line hasPrefix:@" "] || [line hasPrefix:@"\t"]) { if (last) fields[last] = words([fields[last] stringByAppendingFormat:@" %@", line]); continue; }
-            NSRange colon = [line rangeOfString:@":"];
-            if (colon.location == NSNotFound) continue;
-            last = [[line substringToIndex:colon.location] lowercaseString];
-            fields[last] = words([line substringFromIndex:colon.location + 1]);
         }
-    } else {
-        NSString *normalized = words(unit);
-        NSArray *parts = [normalized componentsSeparatedByString:@" "];
-        if (parts.count < 3 || [parts[1] hasPrefix:@"["]) return [@"list:" stringByAppendingString:normalized];
-        fields[@"types"] = parts[0]; fields[@"uris"] = parts[1]; fields[@"suites"] = parts[2];
-        if (parts.count > 3) fields[@"components"] = [[parts subarrayWithRange:NSMakeRange(3, parts.count - 3)] componentsJoinedByString:@" "];
+        // Old backups remain visible/shareable, but can never replace complete folders.
+        if (!mapped || !BFolderForPath(mapped)) { if (complete) ok = NO; continue; }
+        if (complete && ![directories containsObject:mapped.stringByDeletingLastPathComponent]) { ok = NO; break; }
+        NSData *data = BRead(fd, file, NULL, NULL, error);
+        if (!data || files[mapped]) { ok = NO; break; }
+        readBytes += data.length;
+        if (readBytes > BMaxTotal) { ok = NO; break; }
+        files[mapped] = data;
     }
-    BOOL simple = fields.count <= 4 && fields[@"types"] && fields[@"uris"] && fields[@"suites"];
-    for (NSString *key in fields) if (![@[@"types", @"uris", @"suites", @"components"] containsObject:key]) simple = NO;
-    for (NSString *key in @[@"types", @"uris", @"suites"]) if ([fields[key] containsString:@" "]) simple = NO;
-    if (simple) {
-        NSArray *components = [fields[@"components"] ?: @"" componentsSeparatedByString:@" "];
-        return [NSString stringWithFormat:@"repo:%@|%@|%@|%@", fields[@"types"], fields[@"uris"], fields[@"suites"], [[components sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@" "]];
-    }
-    NSMutableArray *canonical = [NSMutableArray array];
-    for (NSString *key in [fields.allKeys sortedArrayUsingSelector:@selector(compare:)]) [canonical addObject:[NSString stringWithFormat:@"%@:%@", key, fields[key]]];
-    return [@"deb822:" stringByAppendingString:[canonical componentsJoinedByString:@"\n"]];
-}
-- (NSDictionary *)restorePlan:(NSDictionary *)archive snapshot:(NSDictionary *)snapshot preferences:(BOOL)preferences sources:(BOOL)sources error:(NSError **)error {
-    NSMutableDictionary *plan = [NSMutableDictionary dictionary];
-    if (preferences) for (NSString *path in archive) if ([path hasPrefix:@"config/"]) plan[path] = archive[path];
-    if (!sources) return plan;
-    NSMutableSet *existing = [NSMutableSet set];
-    for (NSString *path in snapshot) {
-        if (![path hasPrefix:@"sources/"]) continue;
-        BOOL deb822 = [path.pathExtension isEqual:@"sources"];
-        NSString *text = [[NSString alloc] initWithData:snapshot[path] encoding:NSUTF8StringEncoding];
-        for (NSString *unit in BSourceUnits(text, deb822)) [existing addObject:[self sourceKey:unit deb822:deb822]];
-    }
-    for (NSString *ext in @[@"list", @"sources"]) {
-        NSMutableArray *additions = [NSMutableArray array];
-        for (NSString *path in [archive.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
-            if (![path hasPrefix:@"sources/"] || ![path.pathExtension isEqual:ext]) continue;
-            NSString *text = [[NSString alloc] initWithData:archive[path] encoding:NSUTF8StringEncoding];
-            for (NSString *unit in BSourceUnits(text, [ext isEqual:@"sources"])) {
-                NSString *key = [self sourceKey:unit deb822:[ext isEqual:@"sources"]];
-                if (![existing containsObject:key]) { [existing addObject:key]; [additions addObject:unit]; }
-            }
-        }
-        if (additions.count) {
-            NSString *filename = [NSString stringWithFormat:@"sources/sources.list.d/imported-%@.%@", NSUUID.UUID.UUIDString, ext];
-            NSString *text = [[additions componentsJoinedByString:[ext isEqual:@"sources"] ? @"\n\n" : @"\n"] stringByAppendingString:@"\n"];
-            NSData *data = [text dataUsingEncoding:NSUTF8StringEncoding];
-            if (data.length > (off_t)BMaxFile) { BFail(error, @"Merged imported sources exceed file limit"); return nil; }
-            plan[filename] = data;
+    if (ok && manifest && ![seen isEqual:declared]) ok = NO;
+    if (ok && complete) {
+        NSSet *dirs = [NSSet setWithArray:directories];
+        if (![actualDirectories isEqual:dirs]) ok = NO;
+        NSMutableSet *all = [NSMutableSet setWithArray:files.allKeys]; [all unionSet:dirs];
+        if (![[NSSet setWithArray:metadata.allKeys] isEqual:all]) ok = NO;
+        for (NSString *entry in all) {
+            id attrs = metadata[entry];
+            if (![attrs isKindOfClass:NSDictionary.class]) { ok = NO; break; }
+            for (NSString *key in @[@"mode", @"uid", @"gid", @"seconds", @"nanoseconds"])
+                if (![attrs[key] isKindOfClass:NSNumber.class]) ok = NO;
+            if (!ok || [attrs[@"mode"] longLongValue] < 0 || [attrs[@"mode"] unsignedLongLongValue] > 0777 ||
+                [attrs[@"uid"] longLongValue] < 0 || [attrs[@"uid"] unsignedLongLongValue] > UINT32_MAX ||
+                [attrs[@"gid"] longLongValue] < 0 || [attrs[@"gid"] unsignedLongLongValue] > UINT32_MAX ||
+                [attrs[@"nanoseconds"] longLongValue] < 0 || [attrs[@"nanoseconds"] longLongValue] >= 1000000000) { ok = NO; break; }
+            NSString *folder = BFolderForPath(entry);
+            if (![dirs containsObject:folder]) { ok = NO; break; }
         }
     }
-    return plan;
+    if (ok && !manifest && !files.count) ok = NO;
+    close(fd);
+    if (!ok) { BFail(error, @"Invalid, incomplete or unsafe backup folder"); return nil; }
+    return @{@"version":complete ? @2 : @1, @"files":files, @"directories":[directories sortedArrayUsingSelector:@selector(compare:)], @"metadata":metadata};
 }
 - (BOOL)restoreBackupAtURL:(NSURL *)backupURL restorePreferences:(BOOL)preferences restoreSources:(BOOL)sources error:(NSError **)error {
     if (!preferences && !sources) return BFail(error, @"Select at least one restore category");
     [BLock lock];
-    NSMutableArray *journal = [NSMutableArray array];
     __block int configFD = -1, aptFD = -1;
     @try {
-        __block NSDictionary *archive = nil;
-        if (![self coordinate:backupURL writing:NO block:^BOOL(NSURL *actual, NSError **e) { archive = [self loadArchive:actual error:e]; return archive != nil; } error:error]) return NO;
-        __block NSDictionary *snapshot = nil, *plan = nil;
-        __block NSString *root = nil;
-        BOOL prepared = [self protected:^BOOL(NSError **e) {
-            root = [self runtimeRoot:e]; if (!root) return NO;
-            snapshot = [self snapshot:root error:e]; if (!snapshot) return NO;
-            plan = [self restorePlan:archive snapshot:snapshot preferences:preferences sources:sources error:e]; if (!plan) return NO;
-            NSString *library = [self anchor:@"config" root:root error:e], *apt = [self anchor:@"sources" root:root error:e];
-            configFD = BOpenDirectory(library); aptFD = BOpenDirectory(apt);
-            if (configFD < 0 || aptFD < 0) return BFail(e, @"Cannot pin restore directories");
-            for (NSString *path in [plan.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
-                BOOL config = [path hasPrefix:@"config/"]; NSString *relative = [path substringFromIndex:config ? 7 : 8];
-                int fd = config ? configFD : aptFD; BOOL missing; struct stat st = {0};
-                NSData *old = BRead(fd, relative, &st, &missing, e);
-                if (!old && !missing) return NO;
-                // Never overwrite a secret-bearing existing plist that cannot enter the safety backup.
-                if (old && config && !BConfig(relative, old, e)) return NO;
-                int originalFD = -1;
-                if (old) {
-                    int parent = BParent(fd, relative, NO, 0, 0, nil);
-                    if (parent >= 0) { originalFD = openat(parent, relative.lastPathComponent.fileSystemRepresentation, O_RDONLY | O_NOFOLLOW | O_CLOEXEC); close(parent); }
-                    struct stat pinned;
-                    if (originalFD < 0 || fstat(originalFD, &pinned) || pinned.st_ino != st.st_ino || pinned.st_dev != st.st_dev || pinned.st_nlink != 1) { if (originalFD >= 0) close(originalFD); return BFail(e, @"Destination changed during preflight"); }
-                } else { st.st_mode = 0644; st.st_uid = config ? 501 : 0; st.st_gid = config ? 501 : 0;
-#ifdef DO_BACKUP_TESTING
-                    st.st_uid = getuid(); st.st_gid = getgid();
-#endif
-                }
-                [journal addObject:@{@"path":path, @"relative":relative, @"base":@(fd), @"old":old ?: (id)NSNull.null, @"stat":[NSData dataWithBytes:&st length:sizeof(st)], @"originalFD":@(originalFD)}];
-            }
-            return YES;
-        } error:error];
-        if (!prepared) return NO;
-        if (!plan.count) return YES;
-        // Export before overwriting, outside root scope and outside the jailbreak tree.
+        __block NSDictionary *archive = nil, *snapshot = nil; __block NSString *root = nil;
+        if (![self coordinate:backupURL writing:NO block:^BOOL(NSURL *url, NSError **e) { archive = [self loadArchive:url error:e]; return archive != nil; } error:error]) return NO;
+        if (![archive[@"version"] isEqual:@2]) return BFail(error, @"Folder backups require version 2. Create a new complete backup before restoring.");
+        NSMutableArray *folders = [NSMutableArray array];
+        for (NSString *folder in BBackupFolders())
+            if ([archive[@"directories"] containsObject:folder] && ([folder hasPrefix:@"config/"] ? preferences : sources)) [folders addObject:folder];
+        if (!folders.count) return BFail(error, @"The backup contains no selected folders");
+        if (![self protected:^BOOL(NSError **e) { root = [self runtimeRoot:e]; if (root) snapshot = [self snapshot:root error:e]; return snapshot != nil; } error:error]) return NO;
+        // Publish the safety backup before making any change to the live directories.
         __block NSURL *safety = nil;
-        NSURL *parent = backupURL.URLByDeletingLastPathComponent;
-        if (![self coordinate:parent writing:YES block:^BOOL(NSURL *actual, NSError **e) { safety = [self writeSnapshot:snapshot directory:actual safety:YES error:e]; return safety != nil; } error:error]) return NO;
+        if (![self coordinate:backupURL.URLByDeletingLastPathComponent writing:YES block:^BOOL(NSURL *url, NSError **e) { safety = [self writeSnapshot:snapshot directory:url safety:YES error:e]; return safety != nil; } error:error]) return NO;
         return [self protected:^BOOL(NSError **e) {
             if (![[self runtimeRoot:e] isEqual:root]) return BFail(e, @"Jailbreak root changed during restore");
-            // Recheck all targets before the first write, not interleaved with mutation.
-            for (NSDictionary *entry in journal) {
-                BOOL missing; struct stat st;
-                NSData *now = BRead([entry[@"base"] intValue], entry[@"relative"], &st, &missing, e);
-                NSData *old = entry[@"old"] == NSNull.null ? nil : entry[@"old"];
-                struct stat before; [entry[@"stat"] getBytes:&before length:sizeof(before)];
-                if ((old && (!now || ![old isEqual:now] || st.st_ino != before.st_ino || st.st_mode != before.st_mode || st.st_uid != before.st_uid || st.st_gid != before.st_gid)) || (!old && !missing)) return BFail(e, @"Destination changed after safety backup; no restore applied");
-            }
-            NSMutableArray *applied = [NSMutableArray array], *createdConfig = [NSMutableArray array], *createdApt = [NSMutableArray array];
-            __block BOOL ok = YES; NSError *writeError = nil;
+            configFD = BOpenDirectory([self anchor:@"config" root:root error:e]);
+            aptFD = BOpenDirectory([self anchor:@"sources" root:root error:e]);
+            if (configFD < 0 || aptFD < 0) return BFail(e, @"Cannot pin restore parents");
+            NSMutableArray<NSMutableDictionary *> *journal = [NSMutableArray array]; BOOL ok = YES;
             @try {
-                for (NSDictionary *entry in journal) {
-#ifdef DO_BACKUP_TESTING
-                    if (self.failAfterWrites >= 0 && applied.count >= (NSUInteger)self.failAfterWrites) { ok = BFail(&writeError, @"Injected write failure"); break; }
-#endif
-                    struct stat st; [entry[@"stat"] getBytes:&st length:sizeof(st)];
-                    int base = [entry[@"base"] intValue];
-                    [applied addObject:entry];
-                    ok = BWrite(base, entry[@"relative"], plan[entry[@"path"]], st, [entry[@"originalFD"] intValue], base == configFD ? createdConfig : createdApt, &writeError);
+                for (NSString *folder in folders) {
+                    int base = [folder hasPrefix:@"config/"] ? configFD : aptFD;
+                    NSString *stage = [@".restore-" stringByAppendingString:NSUUID.UUID.UUIDString];
+                    NSString *old = [stage stringByAppendingString:@".old"];
+                    struct stat st = {0}, occupied;
+                    BOOL exists = fstatat(base, folder.lastPathComponent.fileSystemRepresentation, &st, AT_SYMLINK_NOFOLLOW) == 0;
+                    if ((!exists && errno != ENOENT) || (exists && !S_ISDIR(st.st_mode)) ||
+                        fstatat(base, old.fileSystemRepresentation, &occupied, AT_SYMLINK_NOFOLLOW) == 0 || errno != ENOENT ||
+                        mkdirat(base, stage.fileSystemRepresentation, 0700)) { ok = BFail(e, @"Cannot stage a folder replacement"); break; }
+                    NSMutableDictionary *entry = [@{@"base":@(base), @"name":folder.lastPathComponent, @"stage":stage, @"old":old,
+                        @"original":@(exists), @"moved":@NO, @"installed":@NO, @"inode":@(st.st_ino), @"device":@(st.st_dev)} mutableCopy];
+                    [journal addObject:entry];
+                    int stageFD = openat(base, stage.fileSystemRepresentation, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+                    if (stageFD < 0) { ok = BFail(e, @"Cannot open staged folder"); break; }
+                    @try {
+                        for (NSString *directory in archive[@"directories"]) {
+                            if (!BUnder(directory, folder) || [directory isEqual:folder]) continue;
+                            NSString *relative = [directory substringFromIndex:folder.length + 1];
+                            int fd = BParent(stageFD, [relative stringByAppendingPathComponent:@".entry"], YES, getuid(), getgid(), nil);
+                            if (fd < 0) { ok = BFail(e, @"Cannot stage backup subdirectory"); break; }
+                            close(fd);
+                        }
+                        NSDictionary *files = archive[@"files"];
+                        for (NSString *path in files) {
+                            if (!ok) break;
+                            if (!BUnder(path, folder)) continue;
+                            ok = BWrite(stageFD, [path substringFromIndex:folder.length + 1], files[path], BStat(archive[@"metadata"][path]), -1, nil, e);
+                        }
+                        for (NSString *directory in [archive[@"directories"] reverseObjectEnumerator]) {
+                            if (!ok) break;
+                            if (!BUnder(directory, folder)) continue;
+                            NSString *relative = [directory isEqual:folder] ? nil : [directory substringFromIndex:folder.length + 1];
+                            int fd = relative ? BParent(stageFD, [relative stringByAppendingPathComponent:@".entry"], NO, 0, 0, nil) : dup(stageFD);
+                            struct stat mode = BStat(archive[@"metadata"][directory]);
+                            struct timespec times[2] = {mode.st_atimespec, mode.st_mtimespec};
+                            ok = fd >= 0 && !fchown(fd, mode.st_uid, mode.st_gid) && !fchmod(fd, mode.st_mode) && !futimens(fd, times) && !fsync(fd);
+                            if (fd >= 0) close(fd);
+                            if (!ok) BFail(e, @"Cannot restore directory permissions");
+                        }
+                    } @finally { close(stageFD); }
                     if (!ok) break;
                 }
-            } @catch (NSException *exception) { ok = BFail(&writeError, @"Restore write raised an exception"); }
-            if (ok) return YES;
+                // Re-read after staging: a changing daemon must not lose newer configuration.
+                if (ok) {
+                    NSDictionary *now = [self snapshot:root error:e];
+                    if (!now || ![now isEqual:snapshot]) ok = BFail(e, @"Destination changed after safety backup; no restore applied");
+                }
+                NSUInteger swapped = 0;
+                for (NSMutableDictionary *entry in journal) {
+                    if (!ok) break;
+#ifdef DO_BACKUP_TESTING
+                    if (self.failAfterWrites >= 0 && swapped >= (NSUInteger)self.failAfterWrites) { ok = BFail(e, @"Injected folder replacement failure"); break; }
+#endif
+                    int base = [entry[@"base"] intValue]; struct stat st;
+                    BOOL exists = fstatat(base, [entry[@"name"] fileSystemRepresentation], &st, AT_SYMLINK_NOFOLLOW) == 0;
+                    if ((!exists && errno != ENOENT) || exists != [entry[@"original"] boolValue] || (exists && (!S_ISDIR(st.st_mode) || st.st_ino != [entry[@"inode"] unsignedLongLongValue] || st.st_dev != [entry[@"device"] unsignedLongLongValue]))) {
+                        ok = BFail(e, @"Destination folder changed during replacement"); break;
+                    }
+                    if (exists) {
+                        if (renameat(base, [entry[@"name"] fileSystemRepresentation], base, [entry[@"old"] fileSystemRepresentation])) { ok = BFail(e, @"Cannot retain original folder"); break; }
+                        entry[@"moved"] = @YES;
+                    }
+                    if (renameat(base, [entry[@"stage"] fileSystemRepresentation], base, [entry[@"name"] fileSystemRepresentation])) { ok = BFail(e, @"Cannot publish restored folder"); break; }
+                    entry[@"installed"] = @YES; swapped++;
+                    if (fsync(base)) { ok = BFail(e, @"Cannot sync restored folder"); break; }
+                }
+            } @catch (NSException *exception) { ok = BFail(e, @"Folder replacement raised an exception"); }
             BOOL rollbackOK = YES;
-            for (NSDictionary *entry in applied.reverseObjectEnumerator) {
-                int base = [entry[@"base"] intValue]; NSString *relative = entry[@"relative"];
-                if (entry[@"old"] != NSNull.null) {
-                    struct stat st; [entry[@"stat"] getBytes:&st length:sizeof(st)];
-                    if (!BWrite(base, relative, entry[@"old"], st, [entry[@"originalFD"] intValue], nil, nil)) rollbackOK = NO;
-                } else {
-                    int pfd = BParent(base, relative, NO, 0, 0, nil);
-                    if (pfd < 0) { if (errno != ENOENT) rollbackOK = NO; }
-                    else if (unlinkat(pfd, relative.lastPathComponent.fileSystemRepresentation, 0) && errno != ENOENT) rollbackOK = NO;
-                    if (pfd >= 0) { fsync(pfd); close(pfd); }
-                }
+            if (!ok) for (NSMutableDictionary *entry in journal.reverseObjectEnumerator) {
+                int base = [entry[@"base"] intValue];
+                if ([entry[@"installed"] boolValue] && renameat(base, [entry[@"name"] fileSystemRepresentation], base, [entry[@"stage"] fileSystemRepresentation])) { rollbackOK = NO; continue; }
+                if ([entry[@"moved"] boolValue] && renameat(base, [entry[@"old"] fileSystemRepresentation], base, [entry[@"name"] fileSystemRepresentation])) rollbackOK = NO;
+                if (fsync(base)) rollbackOK = NO;
             }
-            for (NSArray *pair in @[@[@(configFD), createdConfig], @[@(aptFD), createdApt]]) {
-                for (NSString *dir in [pair[1] reverseObjectEnumerator]) {
-                    int pfd = BParent([pair[0] intValue], dir, NO, 0, 0, nil);
-                    if (pfd >= 0) { if (unlinkat(pfd, dir.lastPathComponent.fileSystemRepresentation, AT_REMOVEDIR)) rollbackOK = NO; close(pfd); }
-                }
+            // Retain all transaction folders if rollback was incomplete.
+            BOOL cleaned = YES;
+            if (ok || rollbackOK) for (NSDictionary *entry in journal) {
+                int base = [entry[@"base"] intValue];
+                if (ok && [entry[@"moved"] boolValue] && !BRemoveVerifiedTree(base, entry[@"old"], NULL)) cleaned = NO;
+                if (!ok && !BRemoveVerifiedTree(base, entry[@"stage"], NULL)) cleaned = NO;
             }
-            NSString *message = [NSString stringWithFormat:@"%@. %@ Safety backup: %@", writeError.localizedDescription ?: @"Restore failed", rollbackOK ? @"Original contents and metadata restored." : @"Rollback incomplete; use the safety backup.", safety.lastPathComponent];
-            return BFail(e, message);
+            if (!rollbackOK) return BFail(e, [NSString stringWithFormat:@"Rollback incomplete; originals retained in .restore folders. Safety backup: %@", safety.lastPathComponent]);
+            if (!cleaned) return BFail(e, ok ? @"Folders restored, but old .restore folders could not be removed." : @"Original folders restored; temporary .restore folders could not be removed.");
+            return ok;
         } error:error];
-    } @finally {
-        for (NSDictionary *entry in journal) { int fd = [entry[@"originalFD"] intValue]; if (fd >= 0) close(fd); }
-        if (configFD >= 0) close(configFD); if (aptFD >= 0) close(aptFD);
-        [BLock unlock];
-    }
+    } @finally { if (configFD >= 0) close(configFD); if (aptFD >= 0) close(aptFD); [BLock unlock]; }
 }
+
 - (NSArray<NSURL *> *)backupsInDirectory:(NSURL *)directory error:(NSError **)error {
     NSArray<NSDictionary<NSString *, id> *> *rows = [self backupSummariesInDirectory:directory error:error];
     return [rows valueForKey:@"url"] ?: @[];
@@ -608,7 +530,7 @@ static BOOL BRemoveVerifiedTree(int parent, NSString *name, NSError **error) {
     if (!data) return nil;
     id object = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
     if (![object isKindOfClass:NSDictionary.class] || ![object[@"format"] isEqual:@"org.roothide.configuration-backup"] ||
-        ![object[@"version"] isEqual:@1] || ![object[@"files"] isKindOfClass:NSArray.class]) return nil;
+        (![object[@"version"] isEqual:@1] && ![object[@"version"] isEqual:@2]) || ![object[@"files"] isKindOfClass:NSArray.class]) return nil;
     NSNumber *created = [object[@"created"] isKindOfClass:NSNumber.class] ? object[@"created"] : nil;
     if (!created && statted) created = @((double)st.st_mtimespec.tv_sec + (double)st.st_mtimespec.tv_nsec / 1e9);
     return created ?: @0;
@@ -622,7 +544,8 @@ static BOOL BRemoveVerifiedTree(int parent, NSString *name, NSError **error) {
         NSDictionary *archive = [self loadArchive:url error:error];
         if (!archive) return nil;
         NSUInteger size = 0;
-        for (NSData *data in archive.allValues) size += data.length;
+        NSDictionary *files = archive[@"files"];
+        for (NSData *data in files.allValues) size += data.length;
         // Only regular files are counted; walk rejects links and special files.
         NSMutableArray *entries = [NSMutableArray array]; NSUInteger walked = 0;
         if (![self walk:BCanonical(url.path) prefix:@"" files:entries bytes:&walked error:error]) return nil;
@@ -643,8 +566,8 @@ static BOOL BRemoveVerifiedTree(int parent, NSString *name, NSError **error) {
         if ([manifest[@"created"] isKindOfClass:NSNumber.class]) created = [NSDate dateWithTimeIntervalSince1970:[manifest[@"created"] doubleValue]];
         if (!created) created = [[NSFileManager defaultManager] attributesOfItemAtPath:url.path error:nil][NSFileModificationDate];
         NSNumber *reported = [manifest[@"report"] isKindOfClass:NSDictionary.class] ? manifest[@"report"][@"skippedCount"] : nil;
-        NSUInteger skipped = [reported isKindOfClass:NSNumber.class] ? reported.unsignedIntegerValue : (regular > archive.count ? regular - archive.count : 0);
-        return @{@"url":url, @"files":@(archive.count), @"size":@(size), @"created":created ?: [NSDate dateWithTimeIntervalSince1970:0],
+        NSUInteger skipped = [reported isKindOfClass:NSNumber.class] ? reported.unsignedIntegerValue : (regular > files.count ? regular - files.count : 0);
+        return @{@"url":url, @"files":@(files.count), @"size":@(size), @"created":created ?: [NSDate dateWithTimeIntervalSince1970:0],
                  @"skipped":@(skipped), @"safety":@([url.lastPathComponent hasPrefix:@"恢复前备份_"] || [url.lastPathComponent hasPrefix:@"SafetyBackup-"]), @"legacy":@(manifest == nil)};
     } @finally { [BLock unlock]; }
 }

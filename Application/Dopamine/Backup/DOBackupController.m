@@ -132,7 +132,7 @@ static dispatch_queue_t BackupUIQueue(void) {
 - (NSArray *)specifiers {
     if (_specifiers) return _specifiers;
     NSMutableArray *items = [NSMutableArray array];
-    NSString *privacy = BT(@"Backup_Privacy", @"仅备份配置，不安装或恢复插件。包含控制中心布局及 CallAssist、Snapper3 授权文件，授权可能绑定设备，不能保证跨设备使用。配置可能包含账户、令牌等私人信息，请妥善保管，不要公开分享。", @"Configuration only: this does not install or restore tweaks. Includes Control Center layout and CallAssist and Snapper3 licenses. Licenses may be device-specific; portability is not guaranteed. Configuration may contain accounts, tokens and other private data. Keep backups private.");
+    NSString *privacy = BT(@"Backup_Privacy", @"仅备份配置，不安装或恢复插件。完整备份 Preferences、ControlCenter、CallAssist、RootHide、CallAssistActivation、Snapper3 和 sources.list.d，包含控制中心布局及插件授权文件。授权可能绑定设备，不能保证跨设备使用。配置可能包含账户、令牌等私人信息，请妥善保管，不要公开分享。", @"Configuration only: this does not install or restore tweaks. Backs up complete Preferences, ControlCenter, CallAssist, RootHide, CallAssistActivation, Snapper3 and sources.list.d folders, including Control Center layout and tweak licenses. Licenses may be device-specific; portability is not guaranteed. Configuration may contain accounts, tokens and other private data. Keep backups private.");
     NSString *location = self.storageDirectory.path;
     [items addObject:[self group:self.title ?: BT(@"Backup_Title", @"配置备份与恢复", @"Configuration Backup & Restore") footer:privacy]];
     [items addObject:[self group:BT(@"Backup_Location", @"备份位置", @"Backup Folder") footer:location ?: BT(@"Backup_NoFolder", @"首次备份时选择保存目录，之后自动记住。", @"Choose a folder for the first backup; it will be remembered.")]];
@@ -148,7 +148,7 @@ static dispatch_queue_t BackupUIQueue(void) {
             [items addObject:file];
         }
     }
-    [items addObject:[self group:BT(@"Backup_RestoreScope", @"恢复内容", @"Restore Contents") footer:BT(@"Backup_ScopeHint", @"只恢复勾选的内容，覆盖对应配置。关闭的项目保持不变。操作仅在已越狱环境中可用，不会自动执行或自动注销。", @"Selected contents overwrite matching configuration; unselected contents stay unchanged. Requires an active jailbreak. Nothing runs or resprings automatically.")]];
+    [items addObject:[self group:BT(@"Backup_RestoreScope", @"恢复内容", @"Restore Contents") footer:BT(@"Backup_ScopeHint", @"所选文件夹整目录替换，备份中没有的现有文件会移除。关闭的项目保持不变。操作仅在已越狱环境中可用，不会自动执行或自动注销。", @"Selected folders are replaced completely; existing files absent from the backup are removed. Unselected folders stay unchanged. Requires an active jailbreak. Nothing runs or resprings automatically.")]];
     for (NSString *key in @[@"preferences", @"sources"]) {
         NSString *title = [key isEqualToString:@"preferences"] ? BT(@"Backup_Preferences", @"配置文件", @"Configuration Files") : BT(@"Backup_Sources", @"软件源", @"Package Sources");
         PSSpecifier *toggle = [PSSpecifier preferenceSpecifierNamed:title target:self set:@selector(setScope:specifier:) get:@selector(scopeValue:) detail:nil cell:PSSwitchCell edit:nil];
@@ -520,7 +520,7 @@ static dispatch_queue_t BackupUIQueue(void) {
     if ([value[@"deleted"] isKindOfClass:NSArray.class] && [value[@"deleted"] count])
         [lines addObject:[NSString stringWithFormat:@"%@ %lu %@", BT(@"Backup_RetentionDeleted", @"已清理旧备份", @"Old backups removed"), (unsigned long)[value[@"deleted"] count], BT(@"Backup_Items", @"项", @"items")]];
     if ([value[@"cleanupFailure"] length]) [lines addObject:value[@"cleanupFailure"]];
-    [lines addObject:BT(@"Backup_Report", @"系统、敏感、生成及不支持配置的逐项跳过原因见 manifest.json 的 report。", @"Per-file skip reasons for system, sensitive, generated or unsupported data are in manifest.json report.")];
+    [lines addObject:BT(@"Backup_Report", @"未找到的目录见 manifest.json 的 report。读取失败时不会生成不完整备份。", @"Missing folders are listed in manifest.json report. Read failures never publish a partial backup.")];
     self.statusText = [lines componentsJoinedByString:@"\n"];
     [self refresh];
     if (![self canPresent]) return;
@@ -571,7 +571,7 @@ static dispatch_queue_t BackupUIQueue(void) {
         BT(@"Backup_Size", @"大小", @"Size"), BSizeText(bytes.unsignedLongLongValue),
         BT(@"Backup_NotIncluded", @"未纳入", @"Not included"), skipped,
         BT(@"Backup_Scope", @"恢复内容", @"Restore contents"), [scope componentsJoinedByString:BT(@"Backup_ListSeparator", @"、", @", ")]];
-    NSString *message = [NSString stringWithFormat:@"%@\n\n%@\n%@", url.lastPathComponent, details, BT(@"Backup_OverwriteWarning", @"将覆盖上述现有配置，其余内容不变。不安装插件。请仅恢复可信的备份。继续？", @"This overwrites the existing configuration listed above; other contents stay unchanged. No tweaks are installed. Restore only trusted backups. Continue?")];
+    NSString *message = [NSString stringWithFormat:@"%@\n\n%@\n%@", url.lastPathComponent, details, BT(@"Backup_OverwriteWarning", @"将整目录替换所选内容，备份中没有的现有文件会移除。未选择的目录不变。不安装插件。请仅恢复可信的备份。继续？", @"This replaces selected folders completely, removing existing files absent from the backup. Unselected folders stay unchanged. No tweaks are installed. Restore only trusted backups. Continue?")];
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:BT(@"Backup_ConfirmRestore", @"确认恢复", @"Confirm Restore") message:message preferredStyle:UIAlertControllerStyleAlert];
     __weak UIAlertController *weakAlert = alert;
     [alert addAction:[UIAlertAction actionWithTitle:BT(@"Backup_Share", @"分享备份", @"Share Backup") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {

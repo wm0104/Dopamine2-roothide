@@ -7,7 +7,7 @@
 #import <limits.h>
 #import <stdlib.h>
 #import <copyfile.h>
-static const NSUInteger BMaxFiles = 512, BMaxFile = 2 * 1024 * 1024, BMaxTotal = 32 * 1024 * 1024;
+static const NSUInteger BMaxFiles = 8192, BMaxFile = 32 * 1024 * 1024, BMaxTotal = 128 * 1024 * 1024;
 static NSString *const BDomain = @"DOConfigurationBackup";
 static NSRecursiveLock *BLock;
 static BOOL BFail(NSError **error, NSString *message) {

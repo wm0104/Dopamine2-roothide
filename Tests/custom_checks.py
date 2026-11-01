@@ -11,7 +11,7 @@ assert 'restoreCustomMounts' not in text('Application/Dopamine/Jailbreak/DOJailb
 assert 'https://wm0104.github.io/repo/' in text('Application/Dopamine/Jailbreak/DOBootstrapper.m')
 assert 'reinstallWhitelistManager' in text('Application/Dopamine/Jailbreak/DOEnvironmentManager.m')
 assert 'installPackage:path' in text('Application/Dopamine/Jailbreak/DOEnvironmentManager.m')
-assert 'cn.zqbb.inject.plist' in text('Application/Dopamine/Backup/DOConfigurationBackupManager.m')
+assert '@"config/RootHide"' in text('Application/Dopamine/Backup/DOConfigurationBackupManager.m')
 assert 'Settings_Jetsam_Multiplier' in text('Application/Dopamine/UI/Settings/DOSettingsController.m')
 assert 'DO_BACKUP_TESTING requires a DEBUG test build' in text('Application/Dopamine/Backup/DOConfigurationBackupManager.h')
 assert 'O_NOFOLLOW' in text('Application/Dopamine/Backup/DOBackupFileIO.h')
