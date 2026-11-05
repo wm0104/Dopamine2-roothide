@@ -15,7 +15,8 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-15-intel
+    # forkfix regressions execute the real Darwin ARM64 syscall ABI.
+    runs-on: macos-15
     timeout-minutes: 90
     defaults:
       run:
