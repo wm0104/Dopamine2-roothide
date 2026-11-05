@@ -1,4 +1,5 @@
 #include <pwd.h>
+#include <errno.h>
 #include <stdio.h>
 #include <dlfcn.h>
 #include <unistd.h>
@@ -197,6 +198,7 @@ int __no_need_to_trust_now__(const char* path)
 #define POSIX_SPAWN_PROC_TYPE_DRIVER 0x700
 int posix_spawnattr_getprocesstype_np(const posix_spawnattr_t * __restrict, int * __restrict) __API_AVAILABLE(macos(10.8), ios(6.0));
 
+// 补齐启动属性，初始化失败时直接返回，避免重新进入同一分支。
 int roothide_systemhook___posix_spawn_prehook(pid_t *restrict pidp, const char *restrict path, struct _posix_spawn_args_desc *desc, char *const argv[restrict], char *const envp[restrict], void *orig, int (*trust_binary)(const char *path), int (*set_process_debugged)(uint64_t pid, bool fullyDebugged), double jetsamMultiplier)
 {
 	if(!path) { //Don't crash here due to bad posix_spawn call
@@ -205,9 +207,12 @@ int roothide_systemhook___posix_spawn_prehook(pid_t *restrict pidp, const char *
 
 	if(!desc || !desc->attrp) {
 		posix_spawnattr_t attr=NULL;
-		posix_spawnattr_init(&attr);
+		int initResult = posix_spawnattr_init(&attr);
+		if (initResult != 0) return initResult;
 		int ret = posix_spawn(pidp, path, (desc && desc->file_actions) ? &desc->file_actions : NULL, &attr, argv, envp);
+		int spawnError = errno;
 		posix_spawnattr_destroy(&attr);
+		errno = spawnError;
 		return ret;
 	}
 
@@ -219,6 +224,7 @@ int roothide_systemhook___posix_spawn_prehook(pid_t *restrict pidp, const char *
 	return posix_spawn_hook_shared(pidp, path, desc, argv, envp, orig, trust_binary, set_process_debugged, jetsamMultiplier);
 }
 
+// 保留底层启动错误，并在完成子进程修复后恢复调用者属性。
 int roothide_systemhook___posix_spawn_posthook(pid_t *restrict pidp, const char *restrict path, struct _posix_spawn_args_desc *desc, char *const argv[restrict], char *const envp[restrict])
 {
 	posix_spawnattr_t attrp = &desc->attrp;
@@ -303,7 +309,8 @@ int roothide_systemhook___posix_spawn_posthook(pid_t *restrict pidp, const char 
 	pid_t pidval = 0;
 	if (!pidp) pidp = &pidval;
 	int ret = __posix_spawn_inline(pidp, path, desc, argv, envc);
-	pid_t pid = *pidp;
+	int savedErrno = errno;
+	pid_t pid = ret == 0 ? *pidp : -1;
 	
 	envbuf_free(envc);
 
@@ -323,6 +330,7 @@ int roothide_systemhook___posix_spawn_posthook(pid_t *restrict pidp, const char 
 		}
 	}
 
+	errno = savedErrno;
 	return ret;
 }
 

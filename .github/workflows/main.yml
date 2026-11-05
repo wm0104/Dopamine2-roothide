@@ -1,5 +1,5 @@
 name: Build custom RootHide IPA
-run-name: ${{ github.event.head_commit.message || '构建配置备份更新' }}
+run-name: ${{ github.event.head_commit.message || '同步上游修复并保留定制功能' }}
 
 on:
   push:
@@ -67,6 +67,11 @@ jobs:
             [ ! -f "$test" ] || python3 "$test"
           done
           if [ -f Tests/run_backup_tests.sh ]; then bash Tests/run_backup_tests.sh; fi
+      - name: Test preservation of existing custom features
+        run: python3 Tests/test_custom_preservation.py
+      - name: Test selectively ported upstream runtime fixes
+        run: |
+          python3 Tests/run_upstream_regressions.py
       - name: Build complete jailbreak and application
         run: |
           set -o pipefail

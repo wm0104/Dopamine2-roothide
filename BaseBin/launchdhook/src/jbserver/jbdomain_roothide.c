@@ -24,6 +24,7 @@ bool roothide_domain_allowed(audit_token_t clientToken)
 
 void recurse_collect_untrusted_cdhashes(const char *path, const char *callerImagePath, const char *callerExecutablePath, const char *workingDir, preferredArchInfo* preferredArch, cdhash_t **cdhashesOut, uint32_t *cdhashCountOut);
 
+// 递归收集依赖散列，并向调用方传递缓存追加错误。
 static int trust_macho_recurse(const char *machoPath, const char *dlopenCallerImagePath, const char *dlopenCallerExecutablePath, const char *workingDir, xpc_object_t preferredArchsArray)
 {
 	if(!machoPath || !dlopenCallerExecutablePath) return -1;
@@ -47,11 +48,12 @@ static int trust_macho_recurse(const char *machoPath, const char *dlopenCallerIm
 	cdhash_t *cdhashes = NULL;
 	uint32_t cdhashesCount = 0;
 	recurse_collect_untrusted_cdhashes(machoPath, dlopenCallerImagePath, dlopenCallerExecutablePath, workingDir, &preferredArch, &cdhashes, &cdhashesCount);
+	int r = 0;
 	if (cdhashes && cdhashesCount > 0) {
-		jb_trustcache_add_cdhashes(cdhashes, cdhashesCount);
-		free(cdhashes);
+		r = jb_trustcache_add_cdhashes(cdhashes, cdhashesCount);
 	}
-	return 0;
+	free(cdhashes);
+	return r;
 }
 
 int roothide_trust_executable_recurse(const char *executablePath, const char *processWorkingDir, xpc_object_t preferredArchsArray)
@@ -203,7 +205,7 @@ struct jbserver_domain gRootHideDomain = {
 		//JBS_ROOTHIDE_JAILBROKEN_CHECK
         {
             .handler = roothide_jailbroken_check,
-            .args = (jbserver_arg[]) {
+            .args = {
                     { .name = "caller-token", .type = JBS_TYPE_CALLER_TOKEN, .out = false },
                     { .name = "jailbroken", .type = JBS_TYPE_BOOL, .out = true },
                     { 0 },
@@ -212,7 +214,7 @@ struct jbserver_domain gRootHideDomain = {
 		//JBS_ROOTHIDE_PALEHIDE_PRESENT
         {
             .handler = roothide_palehide_present,
-            .args = (jbserver_arg[]) {
+            .args = {
                     { .name = "caller-token", .type = JBS_TYPE_CALLER_TOKEN, .out = false },
                     { .name = "palehide", .type = JBS_TYPE_BOOL, .out = true },
                     { 0 },
@@ -221,7 +223,7 @@ struct jbserver_domain gRootHideDomain = {
 		//JBS_ROOTHIDE_BLACKLIST_CHECK
         {
             .handler = roothide_blacklist_check,
-            .args = (jbserver_arg[]) {
+            .args = {
                     { .name = "caller-token", .type = JBS_TYPE_CALLER_TOKEN, .out = false },
 					{ .name = "checktype", .type = JBS_TYPE_STRING, .out = false },
 					{ .name = "checkvalue", .type = JBS_TYPE_XPC_GENERIC, .out = false },
@@ -232,7 +234,7 @@ struct jbserver_domain gRootHideDomain = {
 		//JBS_ROOTHIDE_JAILBREAKD_LOOKUP
         {
             .handler = roothide_jailbreakd_lookup,
-            .args = (jbserver_arg[]) {
+            .args = {
                     { .name = "caller-token", .type = JBS_TYPE_CALLER_TOKEN, .out = false },
                     { .name = "port", .type = JBS_TYPE_XPC_GENERIC, .out = true },
                     { 0 },
@@ -241,7 +243,7 @@ struct jbserver_domain gRootHideDomain = {
 		//JBS_ROOTHIDE_JAILBREAKD_CHECKIN
         {
             .handler = roothide_jailbreakd_checkin,
-            .args = (jbserver_arg[]) {
+            .args = {
                     { .name = "caller-token", .type = JBS_TYPE_CALLER_TOKEN, .out = false },
                     { .name = "port", .type = JBS_TYPE_XPC_GENERIC, .out = true },
                     { 0 },
@@ -250,7 +252,7 @@ struct jbserver_domain gRootHideDomain = {
 		//JBS_ROOTHIDE_GET_ALTERNATIVE_PORT
         {
             .handler = roothide_get_alternative_port,
-            .args = (jbserver_arg[]) {
+            .args = {
                     { .name = "caller-token", .type = JBS_TYPE_CALLER_TOKEN, .out = false },
                     { .name = "port", .type = JBS_TYPE_XPC_GENERIC, .out = true },
                     { 0 },
@@ -259,7 +261,7 @@ struct jbserver_domain gRootHideDomain = {
 		// JBS_ROOTHIDE_TRUST_LIBRARY_RECURSE
 		{
 			.handler = roothide_trust_library_recurse,
-			.args = (jbserver_arg[]){
+			.args = {
 				{ .name = "library-path", .type = JBS_TYPE_STRING, .out = false },
 				{ .name = "caller-library-path", .type = JBS_TYPE_STRING, .out = false },
 				{ .name = "caller-executable-path", .type = JBS_TYPE_STRING, .out = false },
@@ -270,7 +272,7 @@ struct jbserver_domain gRootHideDomain = {
 		// JBS_ROOTHIDE_TRUST_EXECUTABLE_RECURSE
 		{
 			.handler = roothide_trust_executable_recurse,
-			.args = (jbserver_arg[]){
+			.args = {
 				{ .name = "executable-path", .type = JBS_TYPE_STRING, .out = false },
 				{ .name = "process-working-dir", .type = JBS_TYPE_STRING, .out = false },
 				{ .name = "preferred-archs", .type = JBS_TYPE_ARRAY, .out = false },
@@ -280,7 +282,7 @@ struct jbserver_domain gRootHideDomain = {
 		//JBS_ROOTHIDE_DYLD_PATCH_ENABLED_GET
         {
             .handler = roothide_dyld_patch_enabled,
-            .args = (jbserver_arg[]) {
+            .args = {
                     { .name = "caller-token", .type = JBS_TYPE_CALLER_TOKEN, .out = false },
                     { .name = "enabled", .type = JBS_TYPE_BOOL, .out = true },
                     { 0 },
@@ -289,7 +291,7 @@ struct jbserver_domain gRootHideDomain = {
 		//JBS_ROOTHIDE_DYLD_PATCH_ENABLED_SET
         {
             .handler = roothide_set_dyld_patch,
-            .args = (jbserver_arg[]) {
+            .args = {
                     { .name = "caller-token", .type = JBS_TYPE_CALLER_TOKEN, .out = false },
                     { .name = "enabled", .type = JBS_TYPE_BOOL, .out = false },
                     { 0 },

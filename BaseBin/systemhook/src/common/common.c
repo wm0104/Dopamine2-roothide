@@ -1,5 +1,6 @@
 #include "common.h"
 #include "_zqbb.h"
+#include <errno.h>
 #include <limits.h>
 #include "../roothider.h"
 #include <xpc/xpc.h>
@@ -18,6 +19,7 @@
 #include <libjailbreak/util.h>
 #include <libjailbreak/jbroot.h>
 #include <libjailbreak/hookd.h>
+#include <libroothider/_configuration.h>
 #include <libkern/OSCacheControl.h>
 
 bool string_has_prefix(const char *str, const char* prefix)
@@ -52,75 +54,34 @@ bool string_has_suffix(const char* str, const char* suffix)
 	return !strcmp(str + str_len - suffix_len, suffix);
 }
 
+// 独立保存分段状态，允许回调重入并保留调用方的 strtok 状态。
 void string_enumerate_components(const char *string, const char *separator, void (^enumBlock)(const char *pathString, bool *stop))
 {
 	char *stringCopy = strdup(string);
-	char *curString = strtok(stringCopy, separator);
+	if (!stringCopy) return;
+	char *state = NULL;
+	char *curString = strtok_r(stringCopy, separator, &state);
 	while (curString != NULL) {
 		bool stop = false;
 		enumBlock(curString, &stop);
 		if (stop) break;
-		curString = strtok(NULL, separator);
+		curString = strtok_r(NULL, separator, &state);
 	}
 	free(stringCopy);
 }
 
-int timespec_compare(struct timespec *t1, struct timespec *t2)
+// 独立持有配置值，避免并发刷新时释放正在遍历的黑名单。
+static XPC_RETURNS_RETAINED xpc_object_t jbuserconfig_copy_value(const char *key)
 {
-	if (t1->tv_sec == t2->tv_sec && t1->tv_nsec == t2->tv_nsec) return 0;
-
-	if (t1->tv_sec == t2->tv_sec) {
-		return t1->tv_nsec > t2->tv_nsec ? 1 : -1;
-	}
-	else {
-		return t1->tv_sec > t2->tv_sec ? 1 : -1;
-	}
+	xpc_object_t config = zqbb_read_dictionary(JBROOT_PATH("/basebin/config.plist"));
+	if (!config) return NULL;
+	xpc_object_t value = xpc_dictionary_get_value(config, key);
+	if (value) xpc_retain(value);
+	xpc_release(config);
+	return value;
 }
 
-xpc_object_t xpc_object_from_plist(const char *path)
-{
-	xpc_object_t xObj = NULL;
-	int ldFd = open(path, O_RDONLY);
-	if (ldFd >= 0) {
-		struct stat s = {};
-		if(fstat(ldFd, &s) != 0) {
-			close(ldFd);
-			return NULL;
-		}
-		size_t len = s.st_size;
-		void *addr = mmap(NULL, len, PROT_READ, MAP_FILE | MAP_PRIVATE, ldFd, 0);
-		if (addr != MAP_FAILED) {
-			close(ldFd);
-
-			xObj = xpc_create_from_plist(addr, len);
-			munmap(addr, len);
-		}
-	}
-	return xObj;
-}
-
-xpc_object_t jbuserconfig_get_value(const char *key)
-{
-	const char *configPath = JBROOT_PATH("/basebin/config.plist");
-	if (!access(configPath, R_OK)) {
-		static xpc_object_t configDict = NULL;
-		static struct timespec lastConfigWrite = { .tv_sec=0, .tv_nsec = 0 };
-
-		struct stat configStat;
-		if (stat(configPath, &configStat) == 0) {
-			if (timespec_compare(&configStat.st_mtimespec, &lastConfigWrite) > 0) {
-				lastConfigWrite = configStat.st_mtimespec;
-				if (configDict) xpc_release(configDict);
-				configDict = xpc_object_from_plist(configPath);
-			}
-		}
-
-		return xpc_dictionary_get_value(configDict, key);
-	}
-
-	return NULL;
-}
-
+// 根据黑名单和注入白名单确定进程启动策略。
 static kSpawnConfig spawn_config_for_executable(const char* path, char *const argv[restrict])
 {
 	// Blacklist to ensure general system stability
@@ -137,13 +98,18 @@ static kSpawnConfig spawn_config_for_executable(const char* path, char *const ar
 		if (!strcmp(processBlacklist[i], path)) return 0;
 	}
 
-	xpc_object_t userBlacklist = jbuserconfig_get_value("ProcessBlacklist");
+	xpc_object_t userBlacklist = jbuserconfig_copy_value("ProcessBlacklist");
 	if (userBlacklist && xpc_get_type(userBlacklist) == XPC_TYPE_ARRAY) {
 		size_t userBlacklistCount = xpc_array_get_count(userBlacklist);
 		for (size_t i = 0; i < userBlacklistCount; i++) {
-			if (!strcmp(xpc_array_get_string(userBlacklist, i), path)) return kSpawnConfigTrust;
+			const char *blacklistedPath = xpc_array_get_string(userBlacklist, i);
+			if (blacklistedPath && !strcmp(blacklistedPath, path)) {
+				xpc_release(userBlacklist);
+				return kSpawnConfigTrust;
+			}
 		}
 	}
+	if (userBlacklist) xpc_release(userBlacklist);
 
     // 白名单文件存在时，仅允许匹配的进程注入。
     const char *injectPath = JBROOT_PATH("/var/mobile/Library/RootHide/cn.zqbb.inject.plist");
@@ -165,6 +131,7 @@ kSpawnConfig roothide_spawn_config_for_executable(const char* path, char *const 
 // 3. Increase Jetsam limit to more sane value (Multipler defined as JETSAM_MULTIPLIER)
 // 4. Fix spawning as root via persona entitlement on iOS 17.6+
 
+// 统一处理启动环境和权限，仅在成功取得子进程后修复 persona。
 static int spawn_exec_hook_common(bool isExec,
 						   const char *path,
 						   char *const argv[restrict],
@@ -181,8 +148,14 @@ static int spawn_exec_hook_common(bool isExec,
 	bool personaFixNeedsResume = true;
 	int personaFixUid = -1;
 	int personaFixGid = -1;
+	struct _posix_spawn_persona_info *modifiedPersona = NULL;
+	short personaOriginalFlags = 0;
 	posix_spawnattr_t attr = NULL;
 	if (desc) attr = desc->attrp;
+
+	// We need to track every modification we make to attr and revert them before returning
+	// This is because the caller may reuse the struct for another posix_spawn call
+	int memlimitActiveOrig = -1, memlimitInactiveOrig = -1;
 
 	kSpawnConfig spawnConfig = spawn_config_for_executable(path, argv);
 
@@ -254,20 +227,22 @@ static int spawn_exec_hook_common(bool isExec,
 		if (shouldInsertJBEnv) {
 			if (jetsamMultiplier == 0 || !isfinite(jetsamMultiplier)) jetsamMultiplier = 3; // default value (3x)
 			if (jetsamMultiplier > 1) {
-                double configuredAddend = zqbb_getJetsamAddend(path) + round(jetsamMultiplier * 10);
-                int jetsamAddend = configuredAddend >= INT_MAX ? INT_MAX : (int)configuredAddend;
-				int memlimit_active = *(int*)(attrStruct + POSIX_SPAWNATTR_OFF_MEMLIMIT_ACTIVE);
-				if (memlimit_active != -1) {
-					*(int*)(attrStruct + POSIX_SPAWNATTR_OFF_MEMLIMIT_ACTIVE) = (int)min((int64_t)INT_MAX, (int64_t)memlimit_active + jetsamAddend);
+				double configuredAddend = zqbb_getJetsamAddend(path) + round(jetsamMultiplier * 10);
+				int jetsamAddend = configuredAddend >= INT_MAX ? INT_MAX : (int)configuredAddend;
+				int memlimitActive = *(int*)(attrStruct + POSIX_SPAWNATTR_OFF_MEMLIMIT_ACTIVE);
+				if (memlimitActive != -1) {
+					memlimitActiveOrig = memlimitActive;
+					*(int*)(attrStruct + POSIX_SPAWNATTR_OFF_MEMLIMIT_ACTIVE) = (int)min((int64_t)INT_MAX, (int64_t)memlimitActive + jetsamAddend);
 				}
-				int memlimit_inactive = *(int*)(attrStruct + POSIX_SPAWNATTR_OFF_MEMLIMIT_INACTIVE);
-				if (memlimit_inactive != -1) {
-					*(int*)(attrStruct + POSIX_SPAWNATTR_OFF_MEMLIMIT_INACTIVE) = (int)min((int64_t)INT_MAX, (int64_t)memlimit_inactive + jetsamAddend);
+				int memlimitInactive = *(int*)(attrStruct + POSIX_SPAWNATTR_OFF_MEMLIMIT_INACTIVE);
+				if (memlimitInactive != -1) {
+					memlimitInactiveOrig = memlimitInactive;
+					*(int*)(attrStruct + POSIX_SPAWNATTR_OFF_MEMLIMIT_INACTIVE) = (int)min((int64_t)INT_MAX, (int64_t)memlimitInactive + jetsamAddend);
 				}
 			}
 		}
 
-		// On iOS 17.6 and up Apple neutered persona overwrites to block going from (non root) -> (root)
+		// On iOS 17.6 and up, Apple neutered persona overwrites to block going from (non root) -> (root)
 		// Since jailbreak infra relies on this, we need to reenable it via our patches
 		// To do this we will spawn the process as suspended, modify the ucred to the desired uid/gid and resume it
 		// POSIX_SPAWN_SETEXEC is not a concern since using it together with POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE is not supported anyways
@@ -293,10 +268,11 @@ static int spawn_exec_hook_common(bool isExec,
 				}
 
 				if (personaFixUid == 0 || personaFixGid == 0) {
-					// Revert any request to become root back to mobile
-					// Otherwise posix_spawn will straight up fail
-					if (personaFixUid == 0) personaInfo->pspi_uid = 501;
-					if (personaFixGid == 0) personaInfo->pspi_gid = 501;
+					modifiedPersona = personaInfo;
+					personaOriginalFlags = flags;
+					// 将临时身份恢复为调用者的 uid/gid，避免启动被拒绝。
+					if (personaFixUid == 0) personaInfo->pspi_uid = getuid();
+					if (personaFixGid == 0) personaInfo->pspi_gid = getgid();
 
 					if (flags & POSIX_SPAWN_START_SUSPENDED) {
 						personaFixNeedsResume = false;
@@ -310,12 +286,14 @@ static int spawn_exec_hook_common(bool isExec,
 	}
 
 	int r = -1;
+	int spawnError = 0;
 
 	pid_t childPid = -1;
 
 	if ((shouldInsertJBEnv && JBEnvAlreadyInsertedCount == 1) || (!shouldInsertJBEnv && JBEnvAlreadyInsertedCount == 0 && !hasSafeModeVariable)) {
 		// we're already good, just call orig
 		r = orig(&childPid, envp);
+		spawnError = errno;
 	}
 	else {
 		// the state we want to be in is not the state we are in right now
@@ -365,20 +343,37 @@ static int spawn_exec_hook_common(bool isExec,
 		}
 
 		r = orig(&childPid, envc);
+		spawnError = errno;
 
 		envbuf_free(envc);
 	}
 
-	if (personaFixUid == 0 || personaFixGid == 0 && childPid != -1) {
+	// 无论启动是否成功，都还原调用者的 persona 和临时挂起标志。
+	if (memlimitActiveOrig != -1) {
+		*(int*)(attrStruct + POSIX_SPAWNATTR_OFF_MEMLIMIT_ACTIVE) = memlimitActiveOrig;
+	}
+	if (memlimitInactiveOrig != -1) {
+		*(int*)(attrStruct + POSIX_SPAWNATTR_OFF_MEMLIMIT_INACTIVE) = memlimitInactiveOrig;
+	}
+	if (modifiedPersona) {
+		if (personaFixUid == 0) modifiedPersona->pspi_uid = personaFixUid;
+		if (personaFixGid == 0) modifiedPersona->pspi_gid = personaFixGid;
+		if (personaFixNeedsResume) posix_spawnattr_setflags(&attr, personaOriginalFlags);
+	}
+
+	if (r == 0 && childPid > 0 && (personaFixUid == 0 || personaFixGid == 0)) {
 		jbclient_persona_fix(childPid, personaFixUid, personaFixGid);
 		if (personaFixNeedsResume) {
 			kill(childPid, SIGCONT);
 		}
 	}
 
+	// 底层失败通过 errno 返回，清理和子进程修复不能覆盖它。
+	errno = spawnError;
 	return r;
 }
 
+// 传递启动结果，并为调用者主动挂起的子进程启用调试映射。
 int posix_spawn_hook_shared(pid_t *restrict pid, 
 					   const char *restrict path,
 			 struct _posix_spawn_args_desc *desc,
@@ -398,6 +393,7 @@ int posix_spawn_hook_shared(pid_t *restrict pid,
 		}
 		return rr;
 	});
+	int spawnError = errno;
 
 	if (r == 0 && pid && desc) {
 		posix_spawnattr_t attr = desc->attrp;
@@ -412,6 +408,7 @@ int posix_spawn_hook_shared(pid_t *restrict pid,
 		}
 	}
 
+	errno = spawnError;
 	return r;
 }
 

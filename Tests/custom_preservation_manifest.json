@@ -1,0 +1,25 @@
+{
+  "baseline": "a04b04151b37c54a8be29806b6c5da73fe4eeb00",
+  "sha256": {
+    "Application/Dopamine/Backup/DOBackupController.h": "5521e7a55403f1ecde36142aa635867aeb0d4cb5169e9b37748793f97389d234",
+    "Application/Dopamine/Backup/DOBackupController.m": "ef71a1f7219056a0dca2d8180ea5666ebde053f074fcccaf0cf4ae6dd36a852b",
+    "Application/Dopamine/Backup/DOBackupFileIO.h": "4e951cadde95b1f887085cd27f270e26e6dcfd8947e4c407feacd0efef765ac8",
+    "Application/Dopamine/Backup/DOConfigurationBackupManager.h": "60d879eac3ae8404d212023f59ab08bb443b06487258a254cd23b3b031ba5347",
+    "Application/Dopamine/Backup/DOConfigurationBackupManager.m": "28de9947dbf67c96e7dc01159e0b602c01a69adeff4561d101c408d485bc615e",
+    "Application/Dopamine/Backup/DOSourceMigration.h": "4c8113083b079ee8a384b068a59e74ba21e377f20ba68f253f0b62520c9e1daf",
+    "Application/Dopamine/Backup/DOSourceMigration.m": "7e69be7c4dd8aaec4cc3c78556e04dc96eac3fcac7e39555d3c0561035843d37",
+    "Tests/backup_extension_tests.inc": "cb6117b1ff07422030ad276e80eb95c515db990abdb687d76b7fc8f302af7f0f",
+    "Tests/backup_folder_checks.py": "3be7182692822f930058188973475c454a8661e5c56d47290671c97513cb6f11",
+    "Tests/backup_retention_tests.inc": "ac4c55a8523fdb4ed3524198bf544b7f464c26f02e00c68067c2b5228fc9fa16",
+    "Tests/backup_tests.m": "aadb34971f836284ed41b8c05f37a769a378ce7caf4381c7ae7645fbb2987c4f",
+    "Tests/backup_ui_checks.py": "ed443763fe12bcfcbaf274f8bfeb11e64df6d57f2f77470289f9c56052fb07eb",
+    "Tests/custom_checks.py": "dc0571529db35e0c77eca19340047171636241427f9c89d9703d699e6631887d",
+    "Tests/delivery_checks.py": "f8c6137f7ee8c8516b912723976b31d4f408585f0125a5f5e704587e87305e2e",
+    "Tests/run_backup_tests.sh": "39f507a42e48a3f8df6fb5d8c02807dfc6d5d63b502ba0637ddf08681ec96b48",
+    "Tests/source_migration_tests.m": "d9eeeff933f2b5242668aa435dbd6aeac19c462bcc3462f9c6adcb1fc998e679",
+    "Tests/version_identity_tests.m": "f41d345fcca8683828e911fa69ebe4ecd11c971b2d31297714e43b82b2e7ef97",
+    "Tools/verify_delivery.py": "97605ca2a71b0446cb20a525390441ded1f7784f5b776b2a89a84498c9931fb6",
+    "Application/Dopamine/Extensions/NSString+Version.h": "678e588cecc65cc753c3bddc1f11ef7de6eeab1d9fcd535b23c2f51cfc7f33de",
+    "Application/Dopamine/Extensions/NSString+Version.m": "93b84ee448a6cab7de3e11444ad4a2688d9ed0aa3ef76158344d1169f1e7eefc"
+  }
+}
